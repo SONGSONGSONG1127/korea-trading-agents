@@ -662,15 +662,84 @@ elif mode == MODE_SCREEN:
 
 # ── 모드: 포트폴리오 관리 ───────────────────────────────────────────────
 elif mode == MODE_PORTFOLIO:
-    st.title("💼 내 포트폴리오")
-    st.caption("Google Sheets에 저장된 포지션 기준으로 ATR 손절·목표가와 전략점수를 계산합니다.")
+    _SIG_COLOR = {
+        "손절": "#d32f2f", "익절": "#1565c0",
+        "익절 고려": "#f57c00", "보유": "#2e7d32",
+        "오류": "gray", "확인중": "gray",
+    }
+    ss.setdefault("pf_selected", None)
 
-    _SIG_COLOR = {"손절": "#d32f2f", "익절": "#1565c0", "익절 고려": "#f57c00", "보유": "#2e7d32", "오류": "gray", "확인중": "gray"}
-
+    # ── 계좌 목록 로드 ──────────────────────────────────────────────────
     try:
-        positions = portfolio_agent.load_positions()
+        portfolios = portfolio_agent.list_portfolios()
     except Exception as e:
         st.error(f"Google Sheets 연결 오류: {e}")
+        portfolios = []
+        st.stop()
+
+    # 선택된 계좌가 목록에 없으면 첫 번째로 초기화
+    if ss.pf_selected not in portfolios:
+        ss.pf_selected = portfolios[0] if portfolios else portfolio_agent.DEFAULT_PORTFOLIO
+
+    # ── 계좌 선택 / 관리 바 ─────────────────────────────────────────────
+    st.title("💼 내 포트폴리오")
+    bar_l, bar_m, bar_r = st.columns([3, 1.5, 1.5])
+    with bar_l:
+        selected_pf = st.selectbox(
+            "계좌 선택", portfolios,
+            index=portfolios.index(ss.pf_selected) if ss.pf_selected in portfolios else 0,
+            key="pf_select_box",
+            label_visibility="collapsed",
+        )
+        ss.pf_selected = selected_pf
+
+    with bar_m:
+        with st.popover("➕ 계좌 추가"):
+            new_pf_name = st.text_input("새 계좌 이름", key="new_pf_name", placeholder="B계좌")
+            if st.button("만들기", key="btn_add_pf"):
+                n = ss.get("new_pf_name", "").strip()
+                if n and n not in portfolios:
+                    try:
+                        portfolio_agent.add_portfolio(n)
+                        ss.pf_selected = n
+                        st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+                elif n in portfolios:
+                    st.warning("같은 이름의 계좌가 이미 있습니다.")
+                else:
+                    st.warning("이름을 입력해주세요.")
+
+    with bar_r:
+        with st.popover("⚙️ 계좌 관리"):
+            rename_val = st.text_input("이름 변경", value=selected_pf, key="rename_pf_val")
+            if st.button("이름 변경", key="btn_rename_pf"):
+                new_n = ss.get("rename_pf_val", "").strip()
+                if new_n and new_n != selected_pf:
+                    try:
+                        portfolio_agent.rename_portfolio(selected_pf, new_n)
+                        ss.pf_selected = new_n
+                        st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+            st.divider()
+            st.caption(f"**{selected_pf}** 계좌를 삭제합니다.")
+            if st.button("🗑️ 계좌 삭제", key="btn_del_pf", type="secondary"):
+                try:
+                    portfolio_agent.delete_portfolio(selected_pf)
+                    ss.pf_selected = None
+                    st.rerun()
+                except Exception as e:
+                    st.error(str(e))
+
+    st.caption(f"손절선 = 매수가 − 1.5×ATR  |  1차 목표 = 매수가 + 2.0×ATR  |  2차 목표 = 매수가 + 3.0×ATR")
+    st.divider()
+
+    # ── 포지션 로드 ─────────────────────────────────────────────────────
+    try:
+        positions = portfolio_agent.load_positions(selected_pf)
+    except Exception as e:
+        st.error(f"포지션 로드 오류: {e}")
         positions = []
 
     # ── 포지션 추가 폼 ─────────────────────────────────────────────────
@@ -687,13 +756,16 @@ elif mode == MODE_PORTFOLIO:
                 code6 = re.sub(r"\D", "", ss.get("pf_code", "")).zfill(6)
                 if len(code6) == 6 and code6.isdigit():
                     try:
-                        portfolio_agent.add_position(portfolio_agent.Position(
-                            code=code6,
-                            name=ss.get("pf_name", code6),
-                            buy_price=float(ss.get("pf_price", 0)),
-                            quantity=int(ss.get("pf_qty", 0)),
-                            buy_date=ss.get("pf_date", ""),
-                        ))
+                        portfolio_agent.add_position(
+                            portfolio_agent.Position(
+                                code=code6,
+                                name=ss.get("pf_name", code6),
+                                buy_price=float(ss.get("pf_price", 0)),
+                                quantity=int(ss.get("pf_qty", 0)),
+                                buy_date=ss.get("pf_date", ""),
+                            ),
+                            portfolio=selected_pf,
+                        )
                         st.success(f"✅ {ss.get('pf_name', code6)} 추가됐습니다.")
                         st.rerun()
                     except Exception as e:
@@ -702,17 +774,17 @@ elif mode == MODE_PORTFOLIO:
                     st.warning("종목코드 6자리를 정확히 입력해주세요.")
 
     if not positions:
-        st.info("포지션이 없습니다. 위 폼에서 매수 종목을 추가해주세요.")
+        st.info(f"**{selected_pf}**에 포지션이 없습니다. 위 폼에서 추가해주세요.")
     else:
         # ── 신호 계산 ──────────────────────────────────────────────────
         with st.spinner("시세·ATR·전략점수 계산 중..."):
             signals = portfolio_agent.calc_all_signals(positions)
 
         # ── 요약 메트릭 ────────────────────────────────────────────────
-        total_invest  = sum(s.buy_price * s.quantity for s in signals)
-        total_eval    = sum(s.eval_amount for s in signals)
-        total_pl      = total_eval - total_invest
-        total_pl_pct  = total_pl / total_invest * 100 if total_invest else 0
+        total_invest = sum(s.buy_price * s.quantity for s in signals)
+        total_eval   = sum(s.eval_amount for s in signals)
+        total_pl     = total_eval - total_invest
+        total_pl_pct = total_pl / total_invest * 100 if total_invest else 0
 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("포지션 수", f"{len(signals)}개")
@@ -724,14 +796,16 @@ elif mode == MODE_PORTFOLIO:
         st.divider()
 
         # ── 신호 테이블 ────────────────────────────────────────────────
-        col_w = [1.2, 2.0, 1.3, 1.3, 1.3, 1.1, 1.1, 1.6, 1.0, 1.8]
+        col_w = [1.2, 2.0, 1.3, 1.3, 1.3, 1.1, 1.1, 1.6, 1.2, 1.8]
         hdr = st.columns(col_w)
-        for col, label in zip(hdr, ["코드", "종목명", "매수가", "현재가", "수익률", "손절선", "목표1", "목표2", "전략점수", "신호"]):
+        for col, label in zip(hdr, ["코드", "종목명", "매수가", "현재가", "수익률",
+                                     "손절선", "목표1", "목표2", "기술점수", "신호"]):
             col.markdown(f"**{label}**")
 
         for sig in signals:
-            color = _SIG_COLOR.get(sig.signal, "gray")
+            color    = _SIG_COLOR.get(sig.signal, "gray")
             rp_color = "#d32f2f" if sig.return_pct >= 0 else "#1565c0"
+            sc_color = "#2e7d32" if sig.strategy_score >= 30 else ("#f57c00" if sig.strategy_score >= 0 else "#d32f2f")
             row = st.columns(col_w)
             row[0].markdown(f"`{sig.code}`")
             row[1].markdown(f"**{sig.name}**")
@@ -744,7 +818,10 @@ elif mode == MODE_PORTFOLIO:
             row[5].markdown(f"{sig.stop_loss:,.0f}" if sig.stop_loss else "—")
             row[6].markdown(f"{sig.target1:,.0f}" if sig.target1 else "—")
             row[7].markdown(f"{sig.target2:,.0f}" if sig.target2 else "—")
-            row[8].markdown(f"{sig.strategy_score}점" if sig.strategy_score else "—")
+            row[8].markdown(
+                f"<span style='color:{sc_color}; font-weight:700'>{sig.strategy_score:+d}</span>",
+                unsafe_allow_html=True,
+            )
             row[9].markdown(
                 f"<span style='color:{color}; font-weight:800'>{sig.signal}</span>",
                 unsafe_allow_html=True,
@@ -754,7 +831,8 @@ elif mode == MODE_PORTFOLIO:
         st.divider()
         st.markdown("**신호 상세**")
         for sig in signals:
-            color = _SIG_COLOR.get(sig.signal, "gray")
+            color    = _SIG_COLOR.get(sig.signal, "gray")
+            sc_color = "#2e7d32" if sig.strategy_score >= 30 else ("#f57c00" if sig.strategy_score >= 0 else "#d32f2f")
             with st.expander(f"{sig.signal} — {sig.name}({sig.code})"):
                 if sig.error:
                     st.error(sig.error)
@@ -768,11 +846,17 @@ elif mode == MODE_PORTFOLIO:
                         f"**신호 이유**: <span style='color:{color}'>{sig.signal_reason}</span>",
                         unsafe_allow_html=True,
                     )
-                    st.progress(min(sig.strategy_score, 100) / 100,
-                                text=f"전략점수 {sig.strategy_score}점")
+                    # 기술점수 게이지 (-100~+100 → 0~100 표시)
+                    gauge_val = (sig.strategy_score + 100) / 200
+                    st.markdown(
+                        f"<span style='color:{sc_color}'>기술점수 {sig.strategy_score:+d}</span>"
+                        f" <span style='color:gray; font-size:0.85rem'>(-100=강한하락, 0=중립, +100=강한상승)</span>",
+                        unsafe_allow_html=True,
+                    )
+                    st.progress(gauge_val)
                 if st.button(f"🗑️ {sig.name} 삭제", key=f"del_{sig.code}"):
                     try:
-                        portfolio_agent.remove_position(sig.code)
+                        portfolio_agent.remove_position(sig.code, portfolio=selected_pf)
                         st.success(f"✅ {sig.name} 삭제됨")
                         st.rerun()
                     except Exception as e:
