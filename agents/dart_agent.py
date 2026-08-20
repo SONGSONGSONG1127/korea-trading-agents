@@ -119,12 +119,15 @@ def _load_corp_codes() -> dict[str, str]:
     with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
         xml = zf.read(zf.namelist()[0]).decode("utf-8")
 
+    # XML 파서로 정확히 매핑 (정규식은 레코드 경계를 넘어 오매핑 발생)
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(xml)
     mapping: dict[str, str] = {}
-    for m in re.finditer(
-        r"<corp_code>(\d{8})</corp_code>.*?<stock_code>\s*(\d{6})\s*</stock_code>",
-        xml, re.DOTALL,
-    ):
-        mapping[m.group(2)] = m.group(1)
+    for item in root.findall(".//list"):
+        corp_code  = (item.findtext("corp_code")  or "").strip()
+        stock_code = (item.findtext("stock_code") or "").strip()
+        if len(corp_code) == 8 and len(stock_code) == 6 and stock_code.isdigit():
+            mapping[stock_code] = corp_code
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     CODE_CACHE.write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
