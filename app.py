@@ -13,8 +13,8 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from agents import (community, fundamental_agent, news_agent, scoring,
-                    screener, strategy_agent, technical_agent)
+from agents import (community, fundamental_agent, news_agent, portfolio_agent,
+                    scoring, screener, strategy_agent, technical_agent)
 
 st.set_page_config(
     page_title="K-TradingAgents | 한국 주식 멀티 에이전트 분석",
@@ -57,8 +57,9 @@ st.markdown(
 UP_COLOR = "#d32f2f"
 DOWN_COLOR = "#1565c0"
 
-MODE_DETAIL = "🔍 종목 분석"
-MODE_SCREEN = "🏆 오늘의 후보 종목"
+MODE_DETAIL    = "🔍 종목 분석"
+MODE_SCREEN    = "🏆 오늘의 후보 종목"
+MODE_PORTFOLIO = "💼 포트폴리오"
 
 ss = st.session_state
 ss.setdefault("results", {})
@@ -81,7 +82,7 @@ with st.sidebar:
     st.title("📈 K-TradingAgents")
     st.caption("멀티 에이전트 한국 주식 분석 v4")
 
-    mode = st.radio("모드", [MODE_DETAIL, MODE_SCREEN], key="mode")
+    mode = st.radio("모드", [MODE_DETAIL, MODE_SCREEN, MODE_PORTFOLIO], key="mode")
     st.divider()
 
     if mode == MODE_DETAIL:
@@ -97,7 +98,7 @@ with st.sidebar:
             "- 카카오 `035720`"
         )
         scan_btn = False
-    else:
+    elif mode == MODE_SCREEN:
         n_liq = st.slider("1단계: 거래대금 상위 종목 수", 50, 300, 200, 10,
                           help="네이버 시총 상위 목록에서 거래대금 순으로 자르는 1차 유동성 필터")
         n_full = st.slider("2단계: 풀 분석 종목 수", 3, 30, 10,
@@ -108,6 +109,11 @@ with st.sidebar:
             "뉴스·펀더멘탈 크롤링이 필요한 풀 분석은 상위 종목에만 실행됩니다. LLM 토큰은 쓰지 않습니다."
         )
         run_btn = False
+    else:  # MODE_PORTFOLIO
+        scan_btn = False
+        run_btn   = False
+        st.caption("Google Sheets에 저장된 매수 포지션을 관리합니다.")
+        st.caption("손절선 = 매수가 − 1.5×ATR  |  목표가 = 매수가 + 2.0×ATR")
 
 
 # ── 파이프라인 실행 ─────────────────────────────────────────────────────
@@ -569,7 +575,7 @@ if mode == MODE_DETAIL:
         st.info("왼쪽 사이드바에서 종목코드를 입력하고 **에이전트 분석 실행** 버튼을 눌러주세요.")
 
 # ── 모드: 오늘의 후보 종목 ──────────────────────────────────────────────
-else:
+elif mode == MODE_SCREEN:
     st.title("🏆 오늘의 후보 종목")
     st.caption("1단계: 거래대금 상위 종목 근사 기술 점수 → 2단계: 상위 종목 뉴스+펀더멘탈 풀 분석 → 합산 점수 랭킹")
 
@@ -653,5 +659,123 @@ else:
                 )
                 st.dataframe(ts_df, hide_index=True, use_container_width=True)
                 st.caption("검색 관심은 급등주와 급락주 모두에서 치솟습니다 — 방향이 아니라 '주목도'의 지표입니다.")
+
+# ── 모드: 포트폴리오 관리 ───────────────────────────────────────────────
+elif mode == MODE_PORTFOLIO:
+    st.title("💼 내 포트폴리오")
+    st.caption("Google Sheets에 저장된 포지션 기준으로 ATR 손절·목표가와 전략점수를 계산합니다.")
+
+    _SIG_COLOR = {"손절": "#d32f2f", "익절": "#1565c0", "익절 고려": "#f57c00", "보유": "#2e7d32", "오류": "gray", "확인중": "gray"}
+
+    try:
+        positions = portfolio_agent.load_positions()
+    except Exception as e:
+        st.error(f"Google Sheets 연결 오류: {e}")
+        positions = []
+
+    # ── 포지션 추가 폼 ─────────────────────────────────────────────────
+    with st.expander("➕ 포지션 추가", expanded=len(positions) == 0):
+        with st.form("add_pos_form", clear_on_submit=True):
+            fc1, fc2, fc3, fc4, fc5 = st.columns([1.2, 2, 1.5, 1.2, 1.5])
+            fc1.text_input("종목코드", placeholder="005930", key="pf_code")
+            fc2.text_input("종목명", placeholder="삼성전자", key="pf_name")
+            fc3.number_input("매수가 (원)", min_value=1, value=70000, step=100, key="pf_price")
+            fc4.number_input("수량 (주)", min_value=1, value=10, step=1, key="pf_qty")
+            fc5.text_input("매수일", placeholder="2025-01-15", key="pf_date")
+            submitted = st.form_submit_button("추가", type="primary", use_container_width=True)
+            if submitted:
+                code6 = re.sub(r"\D", "", ss.get("pf_code", "")).zfill(6)
+                if len(code6) == 6 and code6.isdigit():
+                    try:
+                        portfolio_agent.add_position(portfolio_agent.Position(
+                            code=code6,
+                            name=ss.get("pf_name", code6),
+                            buy_price=float(ss.get("pf_price", 0)),
+                            quantity=int(ss.get("pf_qty", 0)),
+                            buy_date=ss.get("pf_date", ""),
+                        ))
+                        st.success(f"✅ {ss.get('pf_name', code6)} 추가됐습니다.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"추가 실패: {e}")
+                else:
+                    st.warning("종목코드 6자리를 정확히 입력해주세요.")
+
+    if not positions:
+        st.info("포지션이 없습니다. 위 폼에서 매수 종목을 추가해주세요.")
+    else:
+        # ── 신호 계산 ──────────────────────────────────────────────────
+        with st.spinner("시세·ATR·전략점수 계산 중..."):
+            signals = portfolio_agent.calc_all_signals(positions)
+
+        # ── 요약 메트릭 ────────────────────────────────────────────────
+        total_invest  = sum(s.buy_price * s.quantity for s in signals)
+        total_eval    = sum(s.eval_amount for s in signals)
+        total_pl      = total_eval - total_invest
+        total_pl_pct  = total_pl / total_invest * 100 if total_invest else 0
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("포지션 수", f"{len(signals)}개")
+        m2.metric("총 매수금액", f"{total_invest:,.0f}원")
+        m3.metric("총 평가금액", f"{total_eval:,.0f}원")
+        m4.metric("총 손익", f"{total_pl:+,.0f}원", f"{total_pl_pct:+.1f}%",
+                  delta_color="normal" if total_pl >= 0 else "inverse")
+
+        st.divider()
+
+        # ── 신호 테이블 ────────────────────────────────────────────────
+        col_w = [1.2, 2.0, 1.3, 1.3, 1.3, 1.1, 1.1, 1.6, 1.0, 1.8]
+        hdr = st.columns(col_w)
+        for col, label in zip(hdr, ["코드", "종목명", "매수가", "현재가", "수익률", "손절선", "목표1", "목표2", "전략점수", "신호"]):
+            col.markdown(f"**{label}**")
+
+        for sig in signals:
+            color = _SIG_COLOR.get(sig.signal, "gray")
+            rp_color = "#d32f2f" if sig.return_pct >= 0 else "#1565c0"
+            row = st.columns(col_w)
+            row[0].markdown(f"`{sig.code}`")
+            row[1].markdown(f"**{sig.name}**")
+            row[2].markdown(f"{sig.buy_price:,.0f}")
+            row[3].markdown(f"{sig.current_price:,.0f}" if sig.current_price else "—")
+            row[4].markdown(
+                f"<span style='color:{rp_color}; font-weight:700'>{sig.return_pct:+.1f}%</span>",
+                unsafe_allow_html=True,
+            )
+            row[5].markdown(f"{sig.stop_loss:,.0f}" if sig.stop_loss else "—")
+            row[6].markdown(f"{sig.target1:,.0f}" if sig.target1 else "—")
+            row[7].markdown(f"{sig.target2:,.0f}" if sig.target2 else "—")
+            row[8].markdown(f"{sig.strategy_score}점" if sig.strategy_score else "—")
+            row[9].markdown(
+                f"<span style='color:{color}; font-weight:800'>{sig.signal}</span>",
+                unsafe_allow_html=True,
+            )
+
+        # ── 상세 설명 (expander) ────────────────────────────────────────
+        st.divider()
+        st.markdown("**신호 상세**")
+        for sig in signals:
+            color = _SIG_COLOR.get(sig.signal, "gray")
+            with st.expander(f"{sig.signal} — {sig.name}({sig.code})"):
+                if sig.error:
+                    st.error(sig.error)
+                else:
+                    d1, d2, d3 = st.columns(3)
+                    d1.metric("평가금액", f"{sig.eval_amount:,.0f}원")
+                    d2.metric("손익", f"{sig.profit_loss:+,.0f}원", f"{sig.return_pct:+.1f}%",
+                              delta_color="normal" if sig.profit_loss >= 0 else "inverse")
+                    d3.metric("ATR(14)", f"{sig.atr:,.0f}원")
+                    st.markdown(
+                        f"**신호 이유**: <span style='color:{color}'>{sig.signal_reason}</span>",
+                        unsafe_allow_html=True,
+                    )
+                    st.progress(min(sig.strategy_score, 100) / 100,
+                                text=f"전략점수 {sig.strategy_score}점")
+                if st.button(f"🗑️ {sig.name} 삭제", key=f"del_{sig.code}"):
+                    try:
+                        portfolio_agent.remove_position(sig.code)
+                        st.success(f"✅ {sig.name} 삭제됨")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"삭제 실패: {e}")
 
 render_disclaimer()
