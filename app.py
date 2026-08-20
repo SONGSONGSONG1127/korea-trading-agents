@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-한국 주식 멀티 에이전트 분석 (TradingAgents 스타일) v3
-- 🔍 종목 분석: 종목코드 입력 → 3-에이전트 파이프라인 상세 분석
-- 🏆 오늘의 후보 종목: 전 시장 2단계 스크리닝 → 종합 점수 랭킹 → 클릭 시 상세로 이동
+한국 주식 멀티 에이전트 분석 (TradingAgents 스타일) v4
+- 🔍 종목 분석: 종목코드 입력 → 4-에이전트 파이프라인 상세 분석
+- 🏆 오늘의 후보 종목: 전 시장 2단계 스크리닝 → 합산 점수 랭킹 → 클릭 시 상세로 이동
 
 실행:  streamlit run app.py
 """
@@ -13,7 +13,8 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from agents import community, news_agent, scoring, screener, strategy_agent, technical_agent
+from agents import (community, fundamental_agent, news_agent, scoring,
+                    screener, strategy_agent, technical_agent)
 
 st.set_page_config(
     page_title="K-TradingAgents | 한국 주식 멀티 에이전트 분석",
@@ -37,6 +38,12 @@ st.markdown(
     .opinion-hold { color: #f9a825; font-weight: 800; font-size: 1.6rem; }
     .opinion-sell { color: #1565c0; font-weight: 800; font-size: 1.6rem; }
     .rank-row { border-bottom: 1px solid rgba(128,128,128,0.15); padding: 0.35rem 0; }
+    .fund-row { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.9rem; }
+    .fund-chip {
+        background: rgba(128,128,128,0.1);
+        border-radius: 8px;
+        padding: 0.2rem 0.6rem;
+    }
     .disclaimer {
         font-size: 0.8rem; color: gray;
         border-top: 1px solid rgba(128,128,128,0.3);
@@ -54,7 +61,7 @@ MODE_DETAIL = "🔍 종목 분석"
 MODE_SCREEN = "🏆 오늘의 후보 종목"
 
 ss = st.session_state
-ss.setdefault("results", {})        # code -> (news, tech, strat)
+ss.setdefault("results", {})
 ss.setdefault("last_analyzed", None)
 ss.setdefault("screener", None)
 if "code_input" not in ss:
@@ -64,7 +71,6 @@ if "mode" not in ss:
 
 
 def goto_detail(code: str) -> None:
-    """후보 종목 행에서 '상세 →' 클릭 시: 모드 전환 + 해당 종목 표시."""
     ss["mode"] = MODE_DETAIL
     ss["code_input"] = code
     ss["pending"] = code
@@ -73,7 +79,7 @@ def goto_detail(code: str) -> None:
 # ── 사이드바 ────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("📈 K-TradingAgents")
-    st.caption("멀티 에이전트 한국 주식 분석 v3")
+    st.caption("멀티 에이전트 한국 주식 분석 v4")
 
     mode = st.radio("모드", [MODE_DETAIL, MODE_SCREEN], key="mode")
     st.divider()
@@ -92,14 +98,14 @@ with st.sidebar:
         )
         scan_btn = False
     else:
-        n_liq = st.slider("1단계: 거래대금 상위 종목 수", 50, 300, 120, 10,
+        n_liq = st.slider("1단계: 거래대금 상위 종목 수", 50, 300, 200, 10,
                           help="네이버 시총 상위 목록에서 거래대금 순으로 자르는 1차 유동성 필터")
         n_full = st.slider("2단계: 풀 분석 종목 수", 3, 30, 10,
-                           help="1단계 기술 점수 상위 종목만 뉴스 수집 포함 풀 분석")
+                           help="1단계 기술 점수 상위 종목만 뉴스+펀더멘탈 포함 풀 분석")
         scan_btn = st.button("📡 오늘의 후보 스캔", type="primary", use_container_width=True)
         st.caption(
             "1단계는 종목당 요청 1번(차트 API)이라 가볍고, "
-            "뉴스 크롤링이 필요한 풀 분석은 상위 종목에만 실행됩니다. LLM 토큰은 쓰지 않습니다."
+            "뉴스·펀더멘탈 크롤링이 필요한 풀 분석은 상위 종목에만 실행됩니다. LLM 토큰은 쓰지 않습니다."
         )
         run_btn = False
 
@@ -115,8 +121,16 @@ def analyze(code: str):
         tech = technical_agent.run(code)
         st.write("→ " + (tech.error or tech.summary))
 
-        st.write("🧠 **Agent 3** — 종합 판단 및 매매 가격 산출 중...")
-        strat = strategy_agent.run(news, tech)
+        st.write("📋 **Agent 3** — 재무제표·펀더멘탈 분석 중...")
+        try:
+            fund = fundamental_agent.run(code, stock_name=news.stock_name)
+            st.write("→ " + (fund.error or fund.summary))
+        except Exception as e:
+            fund = None
+            st.write(f"→ 펀더멘탈 수집 실패 (기술 점수만 사용): {e}")
+
+        st.write("🧠 **Agent 4** — 종합 판단 및 매매 가격 산출 중...")
+        strat = strategy_agent.run(news, tech, fund)
 
         st.write("💬 커뮤니티 관심 지표 수집 중... (참고용)")
         try:
@@ -124,7 +138,7 @@ def analyze(code: str):
         except Exception:
             comm = None
         status.update(label="분석 완료 ✅", state="complete", expanded=False)
-    return news, tech, strat, comm
+    return news, tech, fund, strat, comm
 
 
 # ── 상세 분석 렌더링 ────────────────────────────────────────────────────
@@ -140,7 +154,81 @@ def score_color(score: int) -> str:
     return DOWN_COLOR
 
 
-def render_analysis(news, tech, strat, comm=None):
+def _fund_grade_color(grade: str) -> str:
+    return {
+        "매우 우량": UP_COLOR,
+        "우량": "#ef6c00",
+        "보통": "#f9a825",
+        "취약": "gray",
+        "위험": DOWN_COLOR,
+        "미확인": "gray",
+    }.get(grade, "gray")
+
+
+def render_fundamental(fund) -> None:
+    """펀더멘탈 섹션 렌더링."""
+    if fund is None or fund.error:
+        msg = fund.error if fund else "펀더멘탈 데이터 없음"
+        st.warning(f"📋 펀더멘탈 데이터를 가져오지 못했습니다: {msg}")
+        return
+
+    color = _fund_grade_color(fund.fund_grade)
+
+    # 점수 카드
+    dq_label = {"완전": "✅ 완전", "부분": "⚠️ 부분", "기본": "⚠️ 기본 지표만"}.get(fund.data_quality, "")
+    st.markdown(
+        f'<div class="agent-card">'
+        f'<div class="agent-title">📋 펀더멘탈 분석 (밸류에이션 · ROE 품질 · 이익수익률)</div>'
+        f'<div style="font-size:2rem; font-weight:800; color:{color}; line-height:1.1;">'
+        f'{fund.fund_score}<span style="font-size:1rem; color:gray;"> / 100 · {fund.fund_grade}</span></div>'
+        f'<div style="font-size:0.85rem; margin-top:0.3rem;">'
+        f'밸류에이션 <b>{fund.valuation_score}</b>/50 &nbsp;·&nbsp; '
+        f'ROE 품질 <b>{fund.quality_score}</b>/30 &nbsp;·&nbsp; '
+        f'이익수익률 <b>{fund.income_score}</b>/20</div>'
+        f'<div style="font-size:0.8rem; margin-top:0.3rem; color:gray;">데이터 {dq_label}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # 주요 지표
+    chips = []
+    if fund.per is not None:
+        per_color = UP_COLOR if fund.per < 12 else (DOWN_COLOR if fund.per > 25 else "#f9a825")
+        rel = ""
+        if fund.sector_per and fund.sector_per > 0:
+            disc = (fund.sector_per - fund.per) / fund.sector_per * 100
+            rel = f" (업종 {fund.sector_per:.1f}배 대비 {disc:+.0f}%)"
+        chips.append(f'<span class="fund-chip">PER <b style="color:{per_color}">{fund.per:.1f}배</b>{rel}</span>')
+    if fund.pbr is not None:
+        pbr_color = UP_COLOR if fund.pbr < 1.0 else (DOWN_COLOR if fund.pbr > 3.0 else "#f9a825")
+        chips.append(f'<span class="fund-chip">PBR <b style="color:{pbr_color}">{fund.pbr:.2f}배</b></span>')
+    if fund.roe is not None:
+        roe_color = UP_COLOR if fund.roe >= 15 else (DOWN_COLOR if fund.roe < 5 else "#f9a825")
+        chips.append(f'<span class="fund-chip">ROE <b style="color:{roe_color}">{fund.roe:.1f}%</b></span>')
+    if fund.div_yield is not None:
+        dy_color = UP_COLOR if fund.div_yield >= 3 else ("gray" if fund.div_yield >= 1 else DOWN_COLOR)
+        chips.append(f'<span class="fund-chip">배당 <b style="color:{dy_color}">{fund.div_yield:.2f}%</b></span>')
+
+    if chips:
+        st.markdown(f'<div class="fund-row">{"".join(chips)}</div>', unsafe_allow_html=True)
+        st.markdown("")
+
+    # ROE 분기 추이
+    if fund.roe_quarters:
+        with st.expander(f"📈 ROE 분기 추이 ({len(fund.roe_quarters)}분기, 최신→과거)"):
+            st.caption(
+                "네이버 증권 기업실적 테이블에서 수집한 분기 ROE(누적). "
+                "영업이익·매출·부채비율 등은 JavaScript 로딩 방식으로 정적 수집 불가 — "
+                "해당 지표는 네이버 증권 종목 페이지에서 직접 확인하세요."
+            )
+            roe_df = pd.DataFrame(
+                [{"분기": f"Q-{i}" if i > 0 else "최근", "ROE(%)": v}
+                 for i, v in enumerate(fund.roe_quarters)]
+            )
+            st.dataframe(roe_df, hide_index=True, use_container_width=True)
+
+
+def render_analysis(news, tech, fund, strat, comm=None):
     st.subheader(f"{news.stock_name} ({news.code})")
 
     df = tech.df
@@ -152,10 +240,10 @@ def render_analysis(news, tech, strat, comm=None):
     c1.metric("현재가", f"{tech.price:,.0f}원", f"{change:+,.0f}원 ({change_pct:+.2f}%)")
     c2.metric("RSI (14)", f"{tech.rsi:.1f}")
     c3.metric("ATR", f"{tech.atr:,.0f}원", f"{tech.atr_pct:.1%} 진폭", delta_color="off")
-    c4.metric("뉴스 감성 (참고)", f"{news.score:+.2f}", help="뉴스는 점수에 반영되지 않는 확인용 지표입니다. 강한 악재 공시의 매수 베토만 유지됩니다.")
-    c5.metric("기술 원점수", f"{tech.score:+.2f}")
-    c6.metric("투자 매력 점수", f"{strat.score100}점", strat.grade, delta_color="off",
-              help="원점수를 과거 4만 종목-일 분포의 백분위로 변환한 값 — 아래 '점수 산출 정보' 참고")
+    c4.metric("기술 점수", f"{strat.score100}점", strat.grade, delta_color="off")
+    c5.metric("펀더멘탈", f"{strat.fund_score}점", strat.fund_grade, delta_color="off")
+    c6.metric("합산 점수", f"{strat.combined_score}점",
+              help="기술 60% + 펀더멘탈 40% 합산 — 매수 임계 55점(기본)", delta_color="off")
 
     badges = []
     if tech.regime:
@@ -168,34 +256,36 @@ def render_analysis(news, tech, strat, comm=None):
     if badges:
         st.markdown(" · ".join(badges))
 
-    st.markdown("### 🧠 Agent 3 — 최종 전략")
+    st.markdown("### 🧠 Agent 4 — 최종 전략")
     left, right = st.columns([1, 2])
     with left:
         sub = f'<div style="color:gray; font-size:0.85rem;">{strat.reason_code}</div>' if strat.reason_code else ""
-        color = score_color(strat.score100)
+        color = score_color(strat.combined_score)
         st.markdown(
-            f'<div class="agent-card"><div class="agent-title">투자 매력 점수</div>'
+            f'<div class="agent-card"><div class="agent-title">합산 투자 매력 점수</div>'
             f'<div style="font-size:2.6rem; font-weight:800; color:{color}; line-height:1.1;">'
-            f'{strat.score100}<span style="font-size:1.1rem; color:gray;"> / 100 · {strat.grade}</span></div>'
+            f'{strat.combined_score}<span style="font-size:1.1rem; color:gray;"> / 100</span></div>'
+            f'<div style="font-size:0.9rem; margin-top:0.2rem;">'
+            f'기술 <b>{strat.score100}</b> · 펀더멘탈 <b>{strat.fund_score}</b></div>'
             f'<div style="margin-top:0.3rem;">참고 의견: <b style="color:{color}">{strat.opinion}</b></div>{sub}'
             f'<div style="margin-top:0.3rem; font-size:0.85rem;">{strat.confidence}</div></div>',
             unsafe_allow_html=True,
         )
 
-        # 점수 산출 정보 — 점수가 어디서 왔는지 검증 가능한 근거
         m = scoring.meta()
         band = strat.band or {}
         st.markdown(
             f'<div class="agent-card" style="font-size:0.85rem;">'
             f'<div class="agent-title" style="font-size:0.95rem;">📖 점수 산출 정보</div>'
-            f'<div>① 원점수 <b>{strat.total_score:+.2f}</b> = 기술 4축(추세 35/모멘텀 25/거래량 25/위치 15%) '
-            f'가중 합 × 합의 배수 {tech.confluence_mult:.2f} — LLM 없이 수식으로만 계산 (환각 없음)</div>'
-            f'<div>② 점수 <b>{strat.score100}점</b> = 과거 {m["n_samples"]:,} 종목-일'
-            f'({m["n_stocks"]}종목, ~{m["generated"]}) 분포에서 <b>상위 {100 - strat.score100}%</b></div>'
-            f'<div>③ 이 점수 구간({band.get("lo", "?")}~{band.get("hi", "?")}점)의 과거 {m["horizon"]}일 후: '
+            f'<div>① 기술 원점수 <b>{strat.total_score:+.2f}</b> = 4축(추세 35/모멘텀 25/거래량 25/위치 15%) '
+            f'가중 합 × 합의 배수 {tech.confluence_mult:.2f}</div>'
+            f'<div>② 기술 <b>{strat.score100}점</b> = 과거 {m["n_samples"]:,} 종목-일 분포 상위 {100 - strat.score100}%</div>'
+            f'<div>③ 펀더멘탈 <b>{strat.fund_score}점</b> = Piotroski F-스코어(0–9) + 밸류에이션(Graham/Fama-French) + 성장성</div>'
+            f'<div>④ 합산 <b>{strat.combined_score}점</b> = 기술 60% + 펀더멘탈 40% — 매수 임계 55점</div>'
+            f'<div style="margin-top:0.3rem;">이 점수 구간({band.get("lo", "?")}~{band.get("hi", "?")}점)의 과거 {m["horizon"]}일 후: '
             f'승률 <b>{band.get("win", 0):.0%}</b>, 평균 <b>{band.get("avg", 0):+.1%}</b> '
-            f'(표본 {band.get("n", 0):,}건 · 전체 기준선 {m["baseline_win"]:.0%}/{m["baseline_avg"]:+.1%})</div>'
-            f'<div style="color:gray;">④ 뉴스·커뮤니티는 점수 미반영(참고용). 과거 통계는 성과를 보장하지 않습니다.</div>'
+            f'(기준선 {m["baseline_win"]:.0%}/{m["baseline_avg"]:+.1%})</div>'
+            f'<div style="color:gray;">뉴스·커뮤니티는 점수 미반영(참고용). 과거 통계는 성과를 보장하지 않습니다.</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -211,7 +301,7 @@ def render_analysis(news, tech, strat, comm=None):
         st.caption(f"진입 근거: {strat.entry_basis}")
         st.caption(f"손절 근거: {strat.stop_basis}")
 
-        st.markdown("**판단 기여도**")
+        st.markdown("**판단 기여도 (기술 4축)**")
         contrib_df = pd.DataFrame(
             [{"요인": k, "기여도(%)": v} for k, v in
              sorted(strat.contrib_pct.items(), key=lambda x: -x[1])]
@@ -235,6 +325,11 @@ def render_analysis(news, tech, strat, comm=None):
         st.markdown(f'<div class="agent-card">{body}</div>', unsafe_allow_html=True)
         st.success(strat.summary)
 
+    # ── 펀더멘탈 섹션 ──────────────────────────────────────────────────
+    st.markdown("### 📋 Agent 3 — 펀더멘탈 / 재무제표 분석")
+    render_fundamental(fund)
+
+    # ── 기술적 분석 차트 ───────────────────────────────────────────────
     st.markdown("### 📊 Agent 2 — 기술적 분석 (4축 Signal)")
 
     plot_df = df.tail(90)
@@ -338,11 +433,8 @@ def render_analysis(news, tech, strat, comm=None):
             m1.metric(f"{bt['horizon']}일 후 승률", f"{bt['win_rate']:.0%}")
             m2.metric("신호 평균 수익률", f"{bt['avg_return']:+.1%}")
             m3.metric("전체 구간 평균(기준선)", f"{bt['base_avg_return']:+.1%}")
-            st.caption(
-                "동일 종목 과거 구간에 근사 점수 체계를 적용한 참고 통계입니다. "
-                "표본이 적고 문맥형 RSI·합의 배수는 단순화되어 있어 성과를 보장하지 않습니다."
-            )
 
+    # ── 뉴스 섹션 ──────────────────────────────────────────────────────
     st.markdown("### 🗞️ Agent 1 — 뉴스 / 공시 (참고용)")
     st.caption("뉴스 감성은 점수에 반영되지 않습니다. 단, 유상증자·거래정지 등 강한 악재 공시(≤ -0.7)는 매수 의견을 베토합니다.")
     if news.error:
@@ -409,7 +501,7 @@ def render_disclaimer():
 # ── 모드: 종목 분석 ─────────────────────────────────────────────────────
 if mode == MODE_DETAIL:
     st.title("한국 주식 멀티 에이전트 분석")
-    st.caption("Agent 1 (뉴스/공시) → Agent 2 (기술 4축 분석) → Agent 3 (전략 종합) 파이프라인")
+    st.caption("Agent 1 (뉴스/공시) → Agent 2 (기술 4축) → Agent 3 (펀더멘탈) → Agent 4 (전략 종합)")
 
     target, force = None, False
     if run_btn:
@@ -426,19 +518,25 @@ if mode == MODE_DETAIL:
 
     if ss.last_analyzed and ss.last_analyzed in ss.results:
         cached = ss.results[ss.last_analyzed]
-        news, tech, strat = cached[:3]
-        comm = cached[3] if len(cached) > 3 else None
+        # cached = (news, tech, fund, strat, comm) — v4 튜플
+        if len(cached) == 5:
+            news, tech, fund, strat, comm = cached
+        else:
+            # 구버전 캐시 (news, tech, strat, comm) 호환
+            news, tech, strat = cached[:3]
+            fund = None
+            comm = cached[3] if len(cached) > 3 else None
         if strat.error:
             st.error(strat.error)
         else:
-            render_analysis(news, tech, strat, comm)
+            render_analysis(news, tech, fund, strat, comm)
     else:
         st.info("왼쪽 사이드바에서 종목코드를 입력하고 **에이전트 분석 실행** 버튼을 눌러주세요.")
 
 # ── 모드: 오늘의 후보 종목 ──────────────────────────────────────────────
 else:
     st.title("🏆 오늘의 후보 종목")
-    st.caption("1단계: 거래대금 상위 종목 근사 기술 점수 → 2단계: 상위 종목만 뉴스 포함 풀 분석 → 종합 점수 랭킹")
+    st.caption("1단계: 거래대금 상위 종목 근사 기술 점수 → 2단계: 상위 종목 뉴스+펀더멘탈 풀 분석 → 합산 점수 랭킹")
 
     if scan_btn:
         with st.status("전 시장 스캔 중...", expanded=True) as status:
@@ -460,7 +558,7 @@ else:
             top_search = []
         ss.screener = {"final": final, "params": (n_liq, n_full), "top_search": top_search}
         for c in final:
-            ss.results[c.code] = (c.news, c.tech, c.strat, c.comm)
+            ss.results[c.code] = (c.news, c.tech, c.fund, c.strat, c.comm)
 
     sc = ss.screener
     if not sc:
@@ -468,17 +566,18 @@ else:
                 "1단계는 종목당 요청 1번이라 1~2분 내에 끝납니다.")
     else:
         final = sc["final"]
-        st.markdown(f"**풀 분석 {len(final)}종목 — 투자 매력 점수 순** "
+        st.markdown(f"**풀 분석 {len(final)}종목 — 합산 점수 순** "
                     f"(1단계 {sc['params'][0]}종목 → 2단계 {sc['params'][1]}종목)")
 
-        widths = [0.5, 2.0, 1.1, 1.0, 1.0, 1.7, 1.6, 0.9]
+        widths = [0.5, 2.0, 1.1, 1.0, 1.0, 1.2, 1.6, 1.5, 0.9]
         hdr = st.columns(widths)
-        for col, label in zip(hdr, ["#", "종목", "현재가", "점수", "등급/의견", "커뮤니티(참고)", "매수가 / 손절가", ""]):
+        for col, label in zip(hdr, ["#", "종목", "현재가", "합산", "기술/펀더", "등급/의견",
+                                     "커뮤니티(참고)", "매수가 / 손절가", ""]):
             col.markdown(f"**{label}**")
 
         for i, c in enumerate(final, 1):
             s = c.strat
-            color = score_color(s.score100)
+            color = score_color(s.combined_score)
             buzz = ""
             if c.comm is not None:
                 parts = []
@@ -494,17 +593,22 @@ else:
             cols[1].markdown(f"<div class='rank-row'><b>{c.name}</b> <span style='color:gray'>{c.code}</span></div>",
                              unsafe_allow_html=True)
             cols[2].markdown(f"<div class='rank-row'>{c.tech.price:,.0f}원</div>", unsafe_allow_html=True)
-            cols[3].markdown(f"<div class='rank-row' style='color:{color}; font-weight:800; font-size:1.1rem'>{s.score100}</div>",
+            cols[3].markdown(
+                f"<div class='rank-row' style='color:{color}; font-weight:800; font-size:1.1rem'>{s.combined_score}</div>",
+                unsafe_allow_html=True,
+            )
+            cols[4].markdown(
+                f"<div class='rank-row' style='font-size:0.85rem;'>기술 {s.score100} / 펀더 {s.fund_score}</div>",
+                unsafe_allow_html=True,
+            )
+            cols[5].markdown(f"<div class='rank-row'>{s.grade} <span style='color:gray; font-size:0.85rem'>({s.opinion})</span></div>",
                              unsafe_allow_html=True)
-            cols[4].markdown(f"<div class='rank-row'>{s.grade} <span style='color:gray; font-size:0.85rem'>({s.opinion})</span></div>",
+            cols[6].markdown(f"<div class='rank-row'>{buzz}</div>", unsafe_allow_html=True)
+            cols[7].markdown(f"<div class='rank-row'>{s.buy_price:,.0f} / {s.stop_loss:,.0f}</div>",
                              unsafe_allow_html=True)
-            cols[5].markdown(f"<div class='rank-row'>{buzz}</div>", unsafe_allow_html=True)
-            cols[6].markdown(f"<div class='rank-row'>{s.buy_price:,.0f} / {s.stop_loss:,.0f}</div>",
-                             unsafe_allow_html=True)
-            cols[7].button("상세 →", key=f"detail_{c.code}", on_click=goto_detail, args=(c.code,))
+            cols[8].button("상세 →", key=f"detail_{c.code}", on_click=goto_detail, args=(c.code,))
 
-        st.caption("점수 = 과거 4만 종목-일 분포 백분위 (상세 화면의 '점수 산출 정보' 참고). "
-                   "커뮤니티·뉴스는 점수에 반영되지 않는 참고 지표입니다. '상세 →'를 누르면 캐시된 풀 분석으로 이동합니다.")
+        st.caption("합산 점수 = 기술 60% + 펀더멘탈 40%. 커뮤니티·뉴스는 참고 지표입니다. '상세 →'를 누르면 캐시된 풀 분석으로 이동합니다.")
 
         if sc.get("top_search"):
             with st.expander("🔥 네이버 검색상위 30 — 지금 커뮤니티가 보고 있는 종목 (참고)"):
