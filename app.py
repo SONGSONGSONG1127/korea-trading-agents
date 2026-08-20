@@ -173,24 +173,33 @@ def render_fundamental(fund) -> None:
         return
 
     color = _fund_grade_color(fund.fund_grade)
+    dart_badge = " 🔗 DART" if getattr(fund, "dart_available", False) else ""
+
+    # 데이터 품질 레이블
+    dq_map = {
+        "완전(DART)": "✅ 완전 (DART 재무제표)",
+        "완전":        "✅ 완전",
+        "부분":        "⚠️ 부분",
+        "기본":        "⚠️ 기본 지표만",
+    }
+    dq_label = dq_map.get(getattr(fund, "data_quality", ""), "")
 
     # 점수 카드
-    dq_label = {"완전": "✅ 완전", "부분": "⚠️ 부분", "기본": "⚠️ 기본 지표만"}.get(fund.data_quality, "")
     st.markdown(
         f'<div class="agent-card">'
-        f'<div class="agent-title">📋 펀더멘탈 분석 (밸류에이션 · ROE 품질 · 이익수익률)</div>'
+        f'<div class="agent-title">📋 펀더멘탈 분석 (밸류 · 품질 · 성장){dart_badge}</div>'
         f'<div style="font-size:2rem; font-weight:800; color:{color}; line-height:1.1;">'
         f'{fund.fund_score}<span style="font-size:1rem; color:gray;"> / 100 · {fund.fund_grade}</span></div>'
         f'<div style="font-size:0.85rem; margin-top:0.3rem;">'
         f'밸류에이션 <b>{fund.valuation_score}</b>/50 &nbsp;·&nbsp; '
-        f'ROE 품질 <b>{fund.quality_score}</b>/30 &nbsp;·&nbsp; '
-        f'이익수익률 <b>{fund.income_score}</b>/20</div>'
+        f'품질(ROE·F-Score) <b>{fund.quality_score}</b>/30 &nbsp;·&nbsp; '
+        f'성장·수익 <b>{fund.income_score}</b>/20</div>'
         f'<div style="font-size:0.8rem; margin-top:0.3rem; color:gray;">데이터 {dq_label}</div>'
         f'</div>',
         unsafe_allow_html=True,
     )
 
-    # 주요 지표
+    # 주요 지표 칩
     chips = []
     if fund.per is not None:
         per_color = UP_COLOR if fund.per < 12 else (DOWN_COLOR if fund.per > 25 else "#f9a825")
@@ -205,6 +214,21 @@ def render_fundamental(fund) -> None:
     if fund.roe is not None:
         roe_color = UP_COLOR if fund.roe >= 15 else (DOWN_COLOR if fund.roe < 5 else "#f9a825")
         chips.append(f'<span class="fund-chip">ROE <b style="color:{roe_color}">{fund.roe:.1f}%</b></span>')
+    if getattr(fund, "roa", None) is not None:
+        roa_color = UP_COLOR if fund.roa >= 5 else (DOWN_COLOR if fund.roa < 0 else "#f9a825")
+        chips.append(f'<span class="fund-chip">ROA <b style="color:{roa_color}">{fund.roa:.1f}%</b></span>')
+    if getattr(fund, "debt_ratio", None) is not None:
+        dr_color = DOWN_COLOR if fund.debt_ratio > 200 else ("#f9a825" if fund.debt_ratio > 100 else UP_COLOR)
+        chips.append(f'<span class="fund-chip">부채비율 <b style="color:{dr_color}">{fund.debt_ratio:.0f}%</b></span>')
+    if getattr(fund, "op_margin", None) is not None:
+        om_color = UP_COLOR if fund.op_margin >= 15 else ("#f9a825" if fund.op_margin >= 5 else DOWN_COLOR)
+        chips.append(f'<span class="fund-chip">영업이익률 <b style="color:{om_color}">{fund.op_margin:.1f}%</b></span>')
+    if getattr(fund, "revenue_growth", None) is not None:
+        rg_color = UP_COLOR if fund.revenue_growth >= 10 else (DOWN_COLOR if fund.revenue_growth < 0 else "#f9a825")
+        chips.append(f'<span class="fund-chip">매출성장 <b style="color:{rg_color}">{fund.revenue_growth:+.1f}%</b></span>')
+    if getattr(fund, "op_profit_growth", None) is not None:
+        og_color = UP_COLOR if fund.op_profit_growth >= 15 else (DOWN_COLOR if fund.op_profit_growth < 0 else "#f9a825")
+        chips.append(f'<span class="fund-chip">영업이익성장 <b style="color:{og_color}">{fund.op_profit_growth:+.1f}%</b></span>')
     if fund.div_yield is not None:
         dy_color = UP_COLOR if fund.div_yield >= 3 else ("gray" if fund.div_yield >= 1 else DOWN_COLOR)
         chips.append(f'<span class="fund-chip">배당 <b style="color:{dy_color}">{fund.div_yield:.2f}%</b></span>')
@@ -213,14 +237,25 @@ def render_fundamental(fund) -> None:
         st.markdown(f'<div class="fund-row">{"".join(chips)}</div>', unsafe_allow_html=True)
         st.markdown("")
 
+    # Piotroski F-Score (DART 있을 때)
+    f_score = getattr(fund, "f_score", None)
+    if f_score is not None:
+        f_color = UP_COLOR if f_score >= 7 else (DOWN_COLOR if f_score <= 2 else "#f9a825")
+        f_details = getattr(fund, "f_details", [])
+        with st.expander(
+            f"🏅 Piotroski F-Score: **{f_score}/9** — "
+            + ("우량" if f_score >= 7 else ("위험" if f_score <= 2 else "보통"))
+        ):
+            st.caption(
+                "Piotroski (2000, JAR): 수익성(4) + 재무건전성(3) + 운영효율(2) "
+                "총 9개 이진 지표. 8~9점=우량, 6~7=양호, 4~5=보통, ≤3=주의."
+            )
+            for d in f_details:
+                st.markdown(d)
+
     # ROE 분기 추이
     if fund.roe_quarters:
         with st.expander(f"📈 ROE 분기 추이 ({len(fund.roe_quarters)}분기, 최신→과거)"):
-            st.caption(
-                "네이버 증권 기업실적 테이블에서 수집한 분기 ROE(누적). "
-                "영업이익·매출·부채비율 등은 JavaScript 로딩 방식으로 정적 수집 불가 — "
-                "해당 지표는 네이버 증권 종목 페이지에서 직접 확인하세요."
-            )
             roe_df = pd.DataFrame(
                 [{"분기": f"Q-{i}" if i > 0 else "최근", "ROE(%)": v}
                  for i, v in enumerate(fund.roe_quarters)]
