@@ -57,6 +57,79 @@ def score_series(df: pd.DataFrame) -> pd.Series:
     return pd.Series(np.clip(score, -1, 1), index=df.index)
 
 
+PERIODS = [
+    ("1주",  5),
+    ("2주",  10),
+    ("3주",  15),
+    ("4주",  20),
+    ("100일", 100),
+    ("1년",  252),
+]
+
+
+def run_multiperiod(df: pd.DataFrame, threshold: float = THRESHOLD) -> list[dict]:
+    """
+    여러 고정 보유기간별 기술 신호(score >= threshold) 성과 통계.
+
+    반환: 각 기간별 dict 리스트
+      label, days, n_signals, win_rate, avg_return, avg_win, avg_loss,
+      expectancy, std, max_gain, max_loss, benchmark(무신호 평균)
+    """
+    scores = score_series(df)
+    closes = df["close"]
+    ma60 = df.get("ma60", pd.Series(np.nan, index=df.index))
+    valid_base = scores.notna() & ma60.notna()
+
+    results = []
+    for label, days in PERIODS:
+        fwd = closes.shift(-days) / closes - 1
+        valid = valid_base & fwd.notna()
+        sig    = valid & (scores >= threshold)
+        no_sig = valid & (scores < threshold)
+
+        n = int(sig.sum())
+        row: dict = {"label": label, "days": days, "n_signals": n}
+
+        if n >= 3:
+            rets = fwd[sig]
+            wins   = rets[rets > 0]
+            losses = rets[rets <= 0]
+            win_rate = float((rets > 0).mean())
+            avg_win  = float(wins.mean())   if len(wins)   > 0 else 0.0
+            avg_loss = float(losses.mean()) if len(losses) > 0 else 0.0
+            row.update({
+                "win_rate":   win_rate,
+                "avg_return": float(rets.mean()),
+                "avg_win":    avg_win,
+                "avg_loss":   avg_loss,
+                "expectancy": win_rate * avg_win + (1 - win_rate) * avg_loss,
+                "std":        float(rets.std()),
+                "max_gain":   float(rets.max()),
+                "max_loss":   float(rets.min()),
+                "benchmark":  float(fwd[no_sig].mean()) if no_sig.any() else None,
+            })
+        else:
+            row["note"] = "샘플 부족 (신호 3개 미만)"
+
+        results.append(row)
+    return results
+
+
+def run_multiperiod_for_code(code: str, threshold: float = THRESHOLD) -> dict:
+    """
+    종목코드 기준으로 2.5년치 일봉 로드 → 멀티기간 백테스트 실행.
+    반환: {"periods": [...], "total_days": int, "threshold": float}
+    """
+    from . import technical_agent
+    df = technical_agent.fetch_daily_prices_fast(code, days=900)
+    enriched = technical_agent.enrich(df)
+    return {
+        "periods":    run_multiperiod(enriched, threshold),
+        "total_days": len(df),
+        "threshold":  threshold,
+    }
+
+
 def run(df: pd.DataFrame, threshold: float = THRESHOLD, horizon: int = HORIZON) -> dict:
     scores = score_series(df)
     fwd = df["close"].shift(-horizon) / df["close"] - 1

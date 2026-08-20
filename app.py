@@ -65,6 +65,9 @@ ss = st.session_state
 ss.setdefault("results", {})
 ss.setdefault("last_analyzed", None)
 ss.setdefault("screener", None)
+ss.setdefault("bt_open", None)      # 현재 열린 백테스트 종목코드
+ss.setdefault("bt_cache", {})       # {code: run_multiperiod_for_code 결과}
+ss.setdefault("pf_quick_add", None) # 포트폴리오 빠른 추가 대상 코드
 if "code_input" not in ss:
     ss.code_input = "005930"
 if "mode" not in ss:
@@ -610,10 +613,10 @@ elif mode == MODE_SCREEN:
         st.markdown(f"**풀 분석 {len(final)}종목 — 합산 점수 순** "
                     f"(1단계 {sc['params'][0]}종목 → 2단계 {sc['params'][1]}종목)")
 
-        widths = [0.5, 2.0, 1.1, 1.0, 1.0, 1.2, 1.6, 1.5, 0.9]
+        widths = [0.4, 1.8, 1.0, 0.9, 0.9, 1.1, 1.4, 1.3, 0.65, 0.65, 0.65]
         hdr = st.columns(widths)
         for col, label in zip(hdr, ["#", "종목", "현재가", "합산", "기술/펀더", "등급/의견",
-                                     "커뮤니티(참고)", "매수가 / 손절가", ""]):
+                                     "커뮤니티", "매수가/손절", "상세", "📊", "💼"]):
             col.markdown(f"**{label}**")
 
         for i, c in enumerate(final, 1):
@@ -623,33 +626,154 @@ elif mode == MODE_SCREEN:
             if c.comm is not None:
                 parts = []
                 if c.comm.search_rank:
-                    parts.append(f"🔥 검색 {c.comm.search_rank}위")
+                    parts.append(f"🔥{c.comm.search_rank}위")
                 if c.comm.board_ratio is None and c.comm.board_today:
-                    parts.append("토론실 급증")
+                    parts.append("토론급증")
                 elif c.comm.board_ratio and c.comm.board_ratio >= 2:
-                    parts.append(f"토론실 ×{c.comm.board_ratio}")
+                    parts.append(f"×{c.comm.board_ratio}")
                 buzz = " · ".join(parts) or "-"
             cols = st.columns(widths)
             cols[0].markdown(f"<div class='rank-row'>{i}</div>", unsafe_allow_html=True)
-            cols[1].markdown(f"<div class='rank-row'><b>{c.name}</b> <span style='color:gray'>{c.code}</span></div>",
+            cols[1].markdown(f"<div class='rank-row'><b>{c.name}</b> <span style='color:gray; font-size:0.8rem'>{c.code}</span></div>",
                              unsafe_allow_html=True)
-            cols[2].markdown(f"<div class='rank-row'>{c.tech.price:,.0f}원</div>", unsafe_allow_html=True)
+            cols[2].markdown(f"<div class='rank-row'>{c.tech.price:,.0f}</div>", unsafe_allow_html=True)
             cols[3].markdown(
-                f"<div class='rank-row' style='color:{color}; font-weight:800; font-size:1.1rem'>{s.combined_score}</div>",
+                f"<div class='rank-row' style='color:{color}; font-weight:800; font-size:1.05rem'>{s.combined_score}</div>",
                 unsafe_allow_html=True,
             )
             cols[4].markdown(
-                f"<div class='rank-row' style='font-size:0.85rem;'>기술 {s.score100} / 펀더 {s.fund_score}</div>",
+                f"<div class='rank-row' style='font-size:0.82rem;'>{s.score100} / {s.fund_score}</div>",
                 unsafe_allow_html=True,
             )
-            cols[5].markdown(f"<div class='rank-row'>{s.grade} <span style='color:gray; font-size:0.85rem'>({s.opinion})</span></div>",
+            cols[5].markdown(f"<div class='rank-row'>{s.grade} <span style='color:gray; font-size:0.82rem'>({s.opinion})</span></div>",
                              unsafe_allow_html=True)
-            cols[6].markdown(f"<div class='rank-row'>{buzz}</div>", unsafe_allow_html=True)
-            cols[7].markdown(f"<div class='rank-row'>{s.buy_price:,.0f} / {s.stop_loss:,.0f}</div>",
+            cols[6].markdown(f"<div class='rank-row' style='font-size:0.82rem'>{buzz}</div>", unsafe_allow_html=True)
+            cols[7].markdown(f"<div class='rank-row' style='font-size:0.82rem'>{s.buy_price:,.0f} / {s.stop_loss:,.0f}</div>",
                              unsafe_allow_html=True)
-            cols[8].button("상세 →", key=f"detail_{c.code}", on_click=goto_detail, args=(c.code,))
+            cols[8].button("→", key=f"detail_{c.code}", on_click=goto_detail, args=(c.code,))
+            if cols[9].button("📊", key=f"bt_{c.code}", help="멀티기간 백테스트"):
+                ss.bt_open = None if ss.bt_open == c.code else c.code
+                ss.pf_quick_add = None
+            if cols[10].button("💼", key=f"pf_{c.code}", help="포트폴리오에 추가"):
+                ss.pf_quick_add = None if ss.pf_quick_add == c.code else c.code
+                ss.bt_open = None
 
-        st.caption("합산 점수 = 기술 60% + 펀더멘탈 40%. 커뮤니티·뉴스는 참고 지표입니다. '상세 →'를 누르면 캐시된 풀 분석으로 이동합니다.")
+        st.caption("합산 점수 = 기술 60% + 펀더멘탈 40%. 📊 백테스트 · 💼 포트폴리오 추가")
+
+        # ── 백테스트 패널 ────────────────────────────────────────────────
+        if ss.bt_open:
+            bt_code = ss.bt_open
+            bt_name = next((c.name for c in final if c.code == bt_code), bt_code)
+            bt_price = next((c.tech.price for c in final if c.code == bt_code), 0)
+            st.divider()
+            st.markdown(f"### 📊 백테스트 — {bt_name} ({bt_code})")
+            st.caption("기술점수 ≥ 0.30 신호 발생일 종가 진입 → 각 기간 후 종가 청산 (무손절·무목표 순수 보유 시뮬레이션) | 데이터: 최근 2.5년치 일봉")
+
+            if bt_code not in ss.bt_cache:
+                with st.spinner(f"{bt_name} 2.5년 데이터 로드 & 시뮬레이션 중..."):
+                    from agents import backtest as _bt
+                    try:
+                        ss.bt_cache[bt_code] = _bt.run_multiperiod_for_code(bt_code)
+                    except Exception as e:
+                        st.error(f"백테스트 오류: {e}")
+                        ss.bt_cache[bt_code] = None
+
+            bt_res = ss.bt_cache.get(bt_code)
+            if bt_res:
+                total_days = bt_res["total_days"]
+                periods = bt_res["periods"]
+                st.caption(f"사용 데이터: {total_days}거래일 | 신호 기준: 기술점수 ≥ {bt_res['threshold']}")
+
+                # 통계 테이블
+                rows = []
+                for p in periods:
+                    if "note" in p:
+                        rows.append({"기간": p["label"], "신호수": p["n_signals"],
+                                     "승률": "—", "평균수익률": "—", "평균상승": "—",
+                                     "평균하락": "—", "기대값": "—", "무신호 평균": "—"})
+                    else:
+                        rows.append({
+                            "기간": p["label"],
+                            "신호수": p["n_signals"],
+                            "승률": f"{p['win_rate']:.0%}",
+                            "평균수익률": f"{p['avg_return']:+.1%}",
+                            "평균상승": f"{p['avg_win']:+.1%}",
+                            "평균하락": f"{p['avg_loss']:+.1%}",
+                            "기대값": f"{p['expectancy']:+.1%}",
+                            "무신호 평균": f"{p['benchmark']:+.1%}" if p.get("benchmark") is not None else "—",
+                        })
+                st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+                # plotly 차트
+                valid_p = [p for p in periods if "note" not in p]
+                if valid_p:
+                    labels      = [p["label"] for p in valid_p]
+                    avg_rets    = [p["avg_return"] * 100 for p in valid_p]
+                    benchmarks  = [p["benchmark"] * 100 if p.get("benchmark") is not None else 0 for p in valid_p]
+                    bar_colors  = ["#d32f2f" if v >= 0 else "#1565c0" for v in avg_rets]
+                    fig = go.Figure()
+                    fig.add_bar(name="신호 평균수익률", x=labels, y=avg_rets,
+                                marker_color=bar_colors, opacity=0.85)
+                    fig.add_bar(name="무신호 벤치마크", x=labels, y=benchmarks,
+                                marker_color="rgba(128,128,128,0.4)")
+                    fig.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1)
+                    fig.update_layout(
+                        barmode="group", height=300,
+                        margin=dict(l=0, r=0, t=20, b=0),
+                        yaxis_title="수익률 (%)",
+                        legend=dict(orientation="h", y=1.1),
+                        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                    )
+                    fig.update_yaxes(ticksuffix="%", gridcolor="rgba(128,128,128,0.15)")
+                    st.plotly_chart(fig, use_container_width=True)
+
+                with st.expander("기간별 최대상승 / 최대하락 / 변동성"):
+                    risk_rows = []
+                    for p in periods:
+                        if "note" not in p:
+                            risk_rows.append({
+                                "기간": p["label"],
+                                "최대 상승": f"{p['max_gain']:+.1%}",
+                                "최대 하락": f"{p['max_loss']:+.1%}",
+                                "변동성(σ)": f"{p['std']:.1%}",
+                            })
+                    if risk_rows:
+                        st.dataframe(pd.DataFrame(risk_rows), hide_index=True, use_container_width=True)
+
+        # ── 포트폴리오 빠른 추가 패널 ────────────────────────────────────
+        if ss.pf_quick_add:
+            qa_code  = ss.pf_quick_add
+            qa_name  = next((c.name for c in final if c.code == qa_code), qa_code)
+            qa_price = next((c.tech.price for c in final if c.code == qa_code), 0)
+            st.divider()
+            st.markdown(f"### 💼 포트폴리오 추가 — {qa_name} ({qa_code})")
+            try:
+                pf_list = portfolio_agent.list_portfolios()
+            except Exception:
+                pf_list = [portfolio_agent.DEFAULT_PORTFOLIO]
+            with st.form("quick_add_form", clear_on_submit=True):
+                qa1, qa2, qa3, qa4 = st.columns([2, 1.5, 1, 1.5])
+                sel_pf  = qa1.selectbox("계좌", pf_list, key="qa_portfolio")
+                buy_px  = qa2.number_input("매수가 (원)", min_value=1,
+                                           value=int(qa_price) if qa_price else 70000,
+                                           step=100, key="qa_price")
+                qty     = qa3.number_input("수량", min_value=1, value=10, step=1, key="qa_qty")
+                buy_dt  = qa4.text_input("매수일", placeholder="2025-01-15", key="qa_date")
+                if st.form_submit_button("✅ 추가", type="primary", use_container_width=True):
+                    try:
+                        portfolio_agent.add_position(
+                            portfolio_agent.Position(
+                                code=qa_code, name=qa_name,
+                                buy_price=float(buy_px), quantity=int(qty),
+                                buy_date=buy_dt,
+                            ),
+                            portfolio=sel_pf,
+                        )
+                        st.success(f"{qa_name}을(를) [{sel_pf}]에 추가했습니다.")
+                        ss.pf_quick_add = None
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"추가 실패: {e}")
 
         if sc.get("top_search"):
             with st.expander("🔥 네이버 검색상위 30 — 지금 커뮤니티가 보고 있는 종목 (참고)"):
