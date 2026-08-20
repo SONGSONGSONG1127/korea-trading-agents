@@ -21,7 +21,7 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-from . import backtest, community, news_agent, strategy_agent, technical_agent
+from . import backtest, community, fundamental_agent, news_agent, strategy_agent, technical_agent
 
 HEADERS = technical_agent.HEADERS
 
@@ -39,6 +39,7 @@ class Candidate:
     news: object = None
     tech: object = None
     strat: object = None
+    fund: object = None           # fundamental_agent.FundamentalReport
     comm: object = None           # community.Buzz (참고용)
 
 
@@ -85,7 +86,7 @@ def _market_leaders(kospi_pages: int = 4, kosdaq_pages: int = 3) -> list[Candida
     return sorted(out.values(), key=lambda c: -c.value)
 
 
-def stage1(liquidity_top: int = 120, progress: ProgressCb = None) -> list[Candidate]:
+def stage1(liquidity_top: int = 200, progress: ProgressCb = None) -> list[Candidate]:
     """거래대금 상위 종목에 대해 근사 기술 점수를 계산해 내림차순 정렬로 반환."""
     leaders = _market_leaders()[:liquidity_top]
     scored: list[Candidate] = []
@@ -129,13 +130,22 @@ def stage2(cands: list[Candidate], full_top: int = 10, progress: ProgressCb = No
         try:
             cand.news = news_agent.run(cand.code, news_pages=2)
             cand.tech = technical_agent.run(cand.code, df=cand.df, regime=regime)
-            cand.strat = strategy_agent.run(cand.news, cand.tech)
+            try:
+                cand.fund = fundamental_agent.run(cand.code, stock_name=cand.name)
+            except Exception:
+                cand.fund = None
+            cand.strat = strategy_agent.run(cand.news, cand.tech, cand.fund)
             cand.comm = community.get(cand.code, top=top_search)
             if cand.news.stock_name != cand.code:
                 cand.name = cand.news.stock_name
         except Exception:
             cand.strat = None
 
-    done = [c for c in top if c.strat is not None and not c.strat.error]
-    done.sort(key=lambda c: -c.strat.score100)
+    # 펀더멘탈 위험(fund_score < 32) 종목 제거
+    done = [
+        c for c in top
+        if c.strat is not None and not c.strat.error
+        and not (c.fund and not c.fund.error and c.fund.fund_score < 32)
+    ]
+    done.sort(key=lambda c: -c.strat.combined_score)
     return done
