@@ -13,8 +13,8 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from agents import (community, fundamental_agent, news_agent, portfolio_agent,
-                    scoring, screener, strategy_agent, technical_agent)
+from agents import (backdata_agent, community, fundamental_agent, news_agent,
+                    portfolio_agent, scoring, screener, strategy_agent, technical_agent)
 
 st.set_page_config(
     page_title="K-TradingAgents | 한국 주식 멀티 에이전트 분석",
@@ -60,6 +60,7 @@ DOWN_COLOR = "#1565c0"
 MODE_DETAIL    = "🔍 종목 분석"
 MODE_SCREEN    = "🏆 오늘의 후보 종목"
 MODE_PORTFOLIO = "💼 포트폴리오"
+MODE_BACKDATA  = "📅 백데이터 검증"
 
 ss = st.session_state
 ss.setdefault("results", {})
@@ -68,6 +69,7 @@ ss.setdefault("screener", None)
 ss.setdefault("bt_open", None)      # 현재 열린 백테스트 종목코드
 ss.setdefault("bt_cache", {})       # {code: run_multiperiod_for_code 결과}
 ss.setdefault("pf_quick_add", None) # 포트폴리오 빠른 추가 대상 코드
+ss.setdefault("bd_result", None)    # 백데이터 검증 결과 캐시
 if "code_input" not in ss:
     ss.code_input = "005930"
 if "mode" not in ss:
@@ -85,7 +87,7 @@ with st.sidebar:
     st.title("📈 K-TradingAgents")
     st.caption("멀티 에이전트 한국 주식 분석 v4")
 
-    mode = st.radio("모드", [MODE_DETAIL, MODE_SCREEN, MODE_PORTFOLIO], key="mode")
+    mode = st.radio("모드", [MODE_DETAIL, MODE_SCREEN, MODE_PORTFOLIO, MODE_BACKDATA], key="mode")
     st.divider()
 
     if mode == MODE_DETAIL:
@@ -112,11 +114,35 @@ with st.sidebar:
             "뉴스·펀더멘탈 크롤링이 필요한 풀 분석은 상위 종목에만 실행됩니다. LLM 토큰은 쓰지 않습니다."
         )
         run_btn = False
-    else:  # MODE_PORTFOLIO
+    elif mode == MODE_PORTFOLIO:
         scan_btn = False
         run_btn   = False
         st.caption("Google Sheets에 저장된 매수 포지션을 관리합니다.")
         st.caption("손절선 = 매수가 − 1.5×ATR  |  목표가 = 매수가 + 2.0×ATR")
+    else:  # MODE_BACKDATA
+        from datetime import date, timedelta
+        scan_btn = False
+        run_btn  = False
+        st.markdown("**과거 날짜 설정**")
+        bd_date = st.date_input(
+            "시뮬레이션 날짜",
+            value=date.today() - timedelta(days=180),
+            min_value=date.today() - timedelta(days=580),
+            max_value=date.today() - timedelta(days=30),
+            key="bd_date",
+            help="이 날짜 기준으로 스크리너를 돌렸다면 어떤 종목이 나왔을지 시뮬레이션합니다.",
+        )
+        bd_universe = st.slider("탐색 종목 수 (거래대금 상위)", 30, 200, 100, 10,
+                                key="bd_universe",
+                                help="Naver 거래대금 상위 N종목에서 탐색")
+        bd_top = st.slider("최종 상위 종목 수", 5, 20, 10, 1,
+                           key="bd_top",
+                           help="기술점수 상위 K종목의 이후 수익률을 표시")
+        bd_btn = st.button("📅 백데이터 시뮬레이션 실행", type="primary", use_container_width=True)
+        st.caption(
+            "⚠️ 생존 편향 주의: 현재 상장된 종목 기준이므로 당시 상장폐지된 종목은 포함되지 않습니다. "
+            "참고용 검증 도구입니다."
+        )
 
 
 # ── 파이프라인 실행 ─────────────────────────────────────────────────────
@@ -985,5 +1011,147 @@ elif mode == MODE_PORTFOLIO:
                         st.rerun()
                     except Exception as e:
                         st.error(f"삭제 실패: {e}")
+
+# ── 모드: 백데이터 검증 ─────────────────────────────────────────────────
+elif mode == MODE_BACKDATA:
+    from datetime import date, timedelta
+    st.title("📅 백데이터 검증")
+    st.caption(
+        "과거 특정 날짜에 이 시스템으로 스크리닝했을 때 나왔을 종목과, 그 이후 실제 수익률을 확인합니다. "
+        "기술점수(MA·RSI·MACD·볼린저·거래량) 기준으로 탐색합니다."
+    )
+
+    if bd_btn:
+        ss.bd_result = None   # 캐시 초기화 후 재실행
+
+    if bd_btn or (ss.bd_result and ss.bd_result.get("target_date") == str(bd_date)):
+        if not ss.bd_result or ss.bd_result.get("target_date") != str(bd_date):
+            with st.status(f"📅 {bd_date} 기준 백데이터 시뮬레이션...", expanded=True) as status:
+                bar = st.progress(0.0, text="종목 스캔 준비 중...")
+                try:
+                    result = backdata_agent.run(
+                        target_date_str=str(bd_date),
+                        n_universe=bd_universe,
+                        n_top=bd_top,
+                        progress=lambda i, t, name: bar.progress(
+                            i / t, text=f"{i}/{t} — {name}"
+                        ),
+                    )
+                    ss.bd_result = result
+                    status.update(
+                        label=f"✅ 완료 — {result['n_scanned']}종목 스캔, 상위 {len(result['top'])}종목",
+                        state="complete", expanded=False,
+                    )
+                except Exception as e:
+                    st.error(f"시뮬레이션 오류: {e}")
+                    ss.bd_result = None
+
+    res = ss.bd_result
+    if res and res.get("target_date") == str(bd_date):
+        st.markdown(
+            f"**{res['target_date']} 기준** · "
+            f"탐색 {res['n_scanned']}종목 중 기술점수 상위 {len(res['top'])}종목"
+        )
+
+        # ── 요약 통계 ──────────────────────────────────────────────────
+        st.markdown("#### 기간별 요약 (상위 종목 단순 평균)")
+        labels  = res["period_labels"]
+        summary = res["summary"]
+        bm      = res["benchmark"]
+
+        sum_rows = []
+        for label in labels:
+            s = summary.get(label)
+            b = bm.get(label)
+            sum_rows.append({
+                "기간":          label,
+                "신호 평균수익률": f"{s['avg']:+.1%}" if s else "N/A",
+                "승률":          f"{s['win_rate']:.0%}" if s else "N/A",
+                "최고":          f"{s['max']:+.1%}" if s else "N/A",
+                "최저":          f"{s['min']:+.1%}" if s else "N/A",
+                "전체 평균(벤치)": f"{b:+.1%}" if b is not None else "N/A",
+                "표본 수":        s["n"] if s else 0,
+            })
+        st.dataframe(pd.DataFrame(sum_rows), hide_index=True, use_container_width=True)
+
+        # ── plotly 막대 차트 ──────────────────────────────────────────
+        valid_sum = [
+            (l, summary[l]["avg"] * 100, (bm.get(l) or 0) * 100)
+            for l in labels if l in summary
+        ]
+        if valid_sum:
+            _l, _avgs, _bms = zip(*valid_sum)
+            bar_colors = ["#2e7d32" if v >= 0 else "#d32f2f" for v in _avgs]
+            fig_bd = go.Figure()
+            fig_bd.add_bar(name=f"신호 상위{bd_top}종목 평균", x=list(_l), y=list(_avgs),
+                           marker_color=bar_colors, opacity=0.85)
+            fig_bd.add_bar(name="전체 종목 평균(벤치마크)", x=list(_l), y=list(_bms),
+                           marker_color="rgba(128,128,128,0.4)")
+            fig_bd.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1)
+            fig_bd.update_layout(
+                barmode="group", height=300,
+                margin=dict(l=0, r=0, t=20, b=0),
+                yaxis_title="수익률 (%)",
+                legend=dict(orientation="h", y=1.12),
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            )
+            fig_bd.update_yaxes(ticksuffix="%", gridcolor="rgba(128,128,128,0.15)")
+            st.plotly_chart(fig_bd, use_container_width=True)
+
+        # ── 종목별 수익률 테이블 ──────────────────────────────────────
+        st.markdown("#### 종목별 기간별 실제 수익률")
+        top = res["top"]
+        tbl_rows = []
+        for c in top:
+            row = {
+                "종목":    f"{c['name']}({c['code']})",
+                "당시 종가": f"{c['entry_price']:,.0f}원",
+                "기술점수":  f"{c['score']:+.2f}",
+            }
+            for label in labels:
+                v = c["returns"].get(label)
+                row[label] = f"{v:+.1%}" if v is not None else "N/A"
+            tbl_rows.append(row)
+        st.dataframe(pd.DataFrame(tbl_rows), hide_index=True, use_container_width=True)
+
+        # ── plotly 히트맵 ─────────────────────────────────────────────
+        st.markdown("#### 수익률 히트맵")
+        z_vals, y_names, text_vals = [], [], []
+        for c in top:
+            row_z, row_t = [], []
+            for label in labels:
+                v = c["returns"].get(label)
+                row_z.append(v * 100 if v is not None else None)
+                row_t.append(f"{v:+.1%}" if v is not None else "N/A")
+            z_vals.append(row_z)
+            text_vals.append(row_t)
+            y_names.append(c["name"])
+
+        fig_heat = go.Figure(go.Heatmap(
+            z=z_vals, x=labels, y=y_names,
+            text=text_vals, texttemplate="%{text}",
+            colorscale=[
+                [0.0, "#1565c0"], [0.45, "#bbdefb"],
+                [0.5, "#f5f5f5"],
+                [0.55, "#ffcdd2"], [1.0, "#d32f2f"],
+            ],
+            zmid=0,
+            colorbar=dict(title="수익률(%)", ticksuffix="%"),
+            hovertemplate="<b>%{y}</b><br>%{x}: %{text}<extra></extra>",
+        ))
+        fig_heat.update_layout(
+            height=max(250, len(top) * 36 + 80),
+            margin=dict(l=0, r=0, t=20, b=0),
+            yaxis=dict(autorange="reversed"),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig_heat, use_container_width=True)
+        st.caption(
+            "히트맵: 빨강=수익, 파랑=손실, 흰색=보합 · "
+            "N/A=아직 미도래 · ⚠️ 생존 편향(현재 상장 종목 기준)"
+        )
+
+    else:
+        st.info("왼쪽 사이드바에서 날짜를 선택하고 **백데이터 시뮬레이션 실행** 버튼을 눌러주세요.")
 
 render_disclaimer()
