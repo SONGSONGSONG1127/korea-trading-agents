@@ -126,22 +126,30 @@ with st.sidebar:
         st.markdown("**과거 날짜 설정**")
         bd_date = st.date_input(
             "시뮬레이션 날짜",
-            value=date.today() - timedelta(days=180),
-            min_value=date.today() - timedelta(days=580),
-            max_value=date.today() - timedelta(days=30),
+            value=date.today() - timedelta(days=365),
+            min_value=date.today() - timedelta(days=950),
+            max_value=date.today() - timedelta(days=10),
             key="bd_date",
-            help="이 날짜 기준으로 스크리너를 돌렸다면 어떤 종목이 나왔을지 시뮬레이션합니다.",
+            help="이 날짜 기준으로 스크리너를 돌렸다면 어떤 종목이 나왔을지 시뮬레이션합니다. "
+                 "1년 수익률을 보려면 최소 1년 이전 날짜를 선택하세요.",
         )
-        bd_universe = st.slider("탐색 종목 수 (거래대금 상위)", 30, 200, 100, 10,
+        bd_universe = st.slider("탐색 종목 수 (거래대금 상위)", 30, 500, 150, 10,
                                 key="bd_universe",
-                                help="Naver 거래대금 상위 N종목에서 탐색")
-        bd_top = st.slider("최종 상위 종목 수", 5, 20, 10, 1,
+                                help="코스피+코스닥 거래대금 상위 N종목 탐색. 클수록 정확하지만 느림.")
+        bd_top = st.slider("최종 상위 종목 수", 5, 30, 10, 1,
                            key="bd_top",
                            help="기술점수 상위 K종목의 이후 수익률을 표시")
+        bd_dart = st.checkbox(
+            "펀더멘탈 포함 (DART)",
+            value=False,
+            key="bd_dart",
+            help=f"상위 종목에 DART 사업보고서 기반 F-Score·ROE·부채비율 추가. "
+                 f"종목당 API 호출이 추가되어 느려집니다.",
+        )
         bd_btn = st.button("📅 백데이터 시뮬레이션 실행", type="primary", use_container_width=True)
         st.caption(
-            "⚠️ 생존 편향 주의: 현재 상장된 종목 기준이므로 당시 상장폐지된 종목은 포함되지 않습니다. "
-            "참고용 검증 도구입니다."
+            "1년 수익률은 최소 1년 이전 날짜 선택 시 표시됩니다. "
+            "⚠️ 생존 편향: 현재 상장 종목 기준."
         )
 
 
@@ -1033,6 +1041,7 @@ elif mode == MODE_BACKDATA:
                         target_date_str=str(bd_date),
                         n_universe=bd_universe,
                         n_top=bd_top,
+                        include_dart=bd_dart,
                         progress=lambda i, t, name: bar.progress(
                             i / t, text=f"{i}/{t} — {name}"
                         ),
@@ -1113,6 +1122,30 @@ elif mode == MODE_BACKDATA:
                 row[label] = f"{v:+.1%}" if v is not None else "N/A"
             tbl_rows.append(row)
         st.dataframe(pd.DataFrame(tbl_rows), hide_index=True, use_container_width=True)
+
+        # ── DART 펀더멘탈 (선택 시) ───────────────────────────────────
+        if res.get("include_dart") and res.get("dart_year"):
+            st.markdown(f"#### 펀더멘탈 ({res['dart_year']}년 사업보고서 기준)")
+            dart_rows = []
+            for c in top:
+                d = c.get("dart")
+                dart_rows.append({
+                    "종목":     c["name"],
+                    "F-Score":  f"{d['f_score']}/9" if d else "N/A",
+                    "ROA":      f"{d['roa']:+.1f}%" if d and d.get("roa") is not None else "N/A",
+                    "부채비율": f"{d['debt_ratio']:.0f}%" if d and d.get("debt_ratio") is not None else "N/A",
+                    "영업이익률": f"{d['op_margin']:+.1f}%" if d and d.get("op_margin") is not None else "N/A",
+                    "매출성장": f"{d['revenue_growth']:+.1f}%" if d and d.get("revenue_growth") is not None else "N/A",
+                    "영업이익성장": f"{d['op_profit_growth']:+.1f}%" if d and d.get("op_profit_growth") is not None else "N/A",
+                })
+            st.dataframe(pd.DataFrame(dart_rows), hide_index=True, use_container_width=True)
+            # F-Score 상세 expander
+            for c in top:
+                d = c.get("dart")
+                if d and d.get("f_details"):
+                    with st.expander(f"F-Score 상세 — {c['name']} ({d['f_score']}/9)"):
+                        for line in d["f_details"]:
+                            st.caption(line)
 
         # ── plotly 히트맵 ─────────────────────────────────────────────
         st.markdown("#### 수익률 히트맵")
