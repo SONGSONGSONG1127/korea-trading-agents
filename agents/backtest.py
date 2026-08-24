@@ -97,16 +97,23 @@ def run_multiperiod(df: pd.DataFrame, threshold: float = THRESHOLD) -> list[dict
             win_rate = float((rets > 0).mean())
             avg_win  = float(wins.mean())   if len(wins)   > 0 else 0.0
             avg_loss = float(losses.mean()) if len(losses) > 0 else 0.0
+            avg_ret  = float(rets.mean())
+            std      = float(rets.std())
+            bench    = float(fwd[no_sig].mean()) if no_sig.any() else None
+            # 연율화 샤프: 기간 수익률 평균/표준편차 × √(1년당 해당 기간 수)
+            sharpe   = (avg_ret / std) * np.sqrt(252 / days) if std > 0 else None
             row.update({
                 "win_rate":   win_rate,
-                "avg_return": float(rets.mean()),
+                "avg_return": avg_ret,
                 "avg_win":    avg_win,
                 "avg_loss":   avg_loss,
                 "expectancy": win_rate * avg_win + (1 - win_rate) * avg_loss,
-                "std":        float(rets.std()),
+                "std":        std,
+                "sharpe":     sharpe,
                 "max_gain":   float(rets.max()),
                 "max_loss":   float(rets.min()),
-                "benchmark":  float(fwd[no_sig].mean()) if no_sig.any() else None,
+                "benchmark":  bench,
+                "excess":     avg_ret - bench if bench is not None else None,
             })
         else:
             row["note"] = "샘플 부족 (신호 3개 미만)"

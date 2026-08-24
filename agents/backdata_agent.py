@@ -135,16 +135,24 @@ def run(
         benchmark[label] = float(np.mean(vals)) if vals else None
 
     # ── 기간별 요약 통계 ────────────────────────────────────────────────────
+    period_days = dict(PERIODS)
     summary: dict[str, dict] = {}
     for label in PERIOD_LABELS:
         vals = [c["returns"][label] for c in top if c["returns"].get(label) is not None]
         if vals:
+            avg = float(np.mean(vals))
+            std = float(np.std(vals, ddof=1)) if len(vals) >= 2 else 0.0
+            bm_val = benchmark.get(label)
+            # 연율화 샤프 (종목 간 횡단면 기준) — 수익의 '일관성' 지표
+            sharpe = (avg / std) * float(np.sqrt(252 / period_days[label])) if std > 0 else None
             summary[label] = {
-                "avg":      float(np.mean(vals)),
+                "avg":      avg,
                 "win_rate": float(sum(r > 0 for r in vals) / len(vals)),
                 "max":      float(max(vals)),
                 "min":      float(min(vals)),
                 "n":        len(vals),
+                "sharpe":   sharpe,
+                "excess":   avg - bm_val if bm_val is not None else None,
             }
 
     return {

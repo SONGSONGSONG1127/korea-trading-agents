@@ -723,18 +723,20 @@ elif mode == MODE_SCREEN:
                 for p in periods:
                     if "note" in p:
                         rows.append({"기간": p["label"], "신호수": p["n_signals"],
-                                     "승률": "—", "평균수익률": "—", "평균상승": "—",
-                                     "평균하락": "—", "기대값": "—", "무신호 평균": "—"})
+                                     "승률": "—", "평균수익률": "—", "초과수익": "—",
+                                     "샤프": "—", "평균상승": "—", "평균하락": "—",
+                                     "기대값": "—"})
                     else:
                         rows.append({
                             "기간": p["label"],
                             "신호수": p["n_signals"],
                             "승률": f"{p['win_rate']:.0%}",
                             "평균수익률": f"{p['avg_return']:+.1%}",
+                            "초과수익": f"{p['excess']:+.1%}" if p.get("excess") is not None else "—",
+                            "샤프": f"{p['sharpe']:.2f}" if p.get("sharpe") is not None else "—",
                             "평균상승": f"{p['avg_win']:+.1%}",
                             "평균하락": f"{p['avg_loss']:+.1%}",
                             "기대값": f"{p['expectancy']:+.1%}",
-                            "무신호 평균": f"{p['benchmark']:+.1%}" if p.get("benchmark") is not None else "—",
                         })
                 st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
@@ -1071,14 +1073,14 @@ elif mode == MODE_BACKDATA:
         sum_rows = []
         for label in labels:
             s = summary.get(label)
-            b = bm.get(label)
             sum_rows.append({
                 "기간":          label,
                 "신호 평균수익률": f"{s['avg']:+.1%}" if s else "N/A",
+                "초과수익":       f"{s['excess']:+.1%}" if s and s.get("excess") is not None else "N/A",
+                "샤프":          f"{s['sharpe']:.2f}" if s and s.get("sharpe") is not None else "N/A",
                 "승률":          f"{s['win_rate']:.0%}" if s else "N/A",
                 "최고":          f"{s['max']:+.1%}" if s else "N/A",
                 "최저":          f"{s['min']:+.1%}" if s else "N/A",
-                "전체 평균(벤치)": f"{b:+.1%}" if b is not None else "N/A",
                 "표본 수":        s["n"] if s else 0,
             })
         st.dataframe(pd.DataFrame(sum_rows), hide_index=True, use_container_width=True)
