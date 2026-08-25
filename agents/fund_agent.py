@@ -23,6 +23,12 @@
   Moreira & Muir (2017, JF). KOSPI 최근 20일 실현변동성이 목표(연 15%)를 넘으면
   주식 비중을 target/realized 로 축소하고 나머지는 현금 보유.
 
+회전율 억제 (항상 적용):
+  랭크 버퍼 — 보유 종목은 점수 랭크가 3×n_top 밖으로 밀릴 때만 교체.
+  노트레이드 밴드 — 보유 지속 종목의 목표-현재 차이가 NAV 1% 미만이면 매매 생략.
+  (2026-08 진단: 신호의 크로스섹션 IC가 약해 잦은 교체는 비용만 발생.
+   12-1 모멘텀 랭킹도 테스트했으나 이 구간에서 기술점수보다 나빠 기각.)
+
 주의: 모든 지표(MA·RSI·MACD·OBV·볼린저)는 인과적(과거 데이터만 사용)이므로
 전체 구간 점수 시계열을 한 번만 계산한 뒤 날짜로 슬라이스해도 미래 정보 누출이 없다.
 """
@@ -261,13 +267,20 @@ def run(
                     eligible[c] = float(val)
             universe = sorted(eligible, key=eligible.get, reverse=True)[:n_universe]
 
-            # ── 종목 선정: 유니버스 내 당일 점수 상위 n_top ──────────────
+            # ── 종목 선정: 점수 랭킹 + 버퍼 규칙 (회전율 억제) ───────────
+            # 보유 종목은 랭크가 3×n_top 밖으로 밀려날 때만 교체한다.
+            # (모멘텀 문헌의 rank-buffer 기법 — 신호 노이즈로 인한 불필요한 매매 방지)
             cand_scores = {}
             for c in universe:
                 sc = stocks[c]["score"].loc[t]
                 if not pd.isna(sc):
                     cand_scores[c] = float(sc)
-            picked = sorted(cand_scores, key=cand_scores.get, reverse=True)[:n_top]
+            ranked = sorted(cand_scores, key=cand_scores.get, reverse=True)
+            rank_pos = {c: i for i, c in enumerate(ranked)}
+            buffer_rank = 3 * n_top
+            kept = [c for c in shares if rank_pos.get(c, 10 ** 9) < buffer_rank]
+            fresh = [c for c in ranked if c not in kept][: max(0, n_top - len(kept))]
+            picked = kept + fresh
 
             if picked:
                 # 역변동성용 σ (최근 60거래일)
@@ -285,16 +298,27 @@ def run(
                         eq_frac = float(min(1.0, vol_target / rv))
                 w = {c: v * eq_frac for c, v in w.items()}
 
-                # ── 체결: 목표 비중으로 전면 리밸런싱 (거래비용 차감) ────
+                # ── 체결: 목표 비중 리밸런싱 (노트레이드 밴드 + 거래비용) ─
                 cur_val = {c: sh * stocks[c]["close"].loc[t] for c, sh in shares.items()}
                 tgt_val = {c: w[c] * nav for c in picked}
+                # 이미 보유 중이고 목표와의 차이가 NAV 1% 미만이면 매매 생략 (비용 절감)
+                for c in picked:
+                    cv = cur_val.get(c, 0.0)
+                    if cv > 0 and abs(tgt_val[c] - cv) < 0.01 * nav:
+                        tgt_val[c] = cv
                 traded = sum(abs(tgt_val.get(c, 0.0) - cur_val.get(c, 0.0))
                              for c in set(cur_val) | set(tgt_val))
                 cost = cost_rate * traded
                 turnover = traded / nav if nav > 0 else 0.0
 
                 nav_after = nav - cost
-                tgt_val = {c: w[c] * nav_after for c in picked}
+                # 비용은 매매가 발생한 포지션에서 차감 (밴드로 유지된 포지션은 그대로)
+                adj = [c for c in picked if tgt_val[c] != cur_val.get(c, 0.0)]
+                adj_sum = sum(tgt_val[c] for c in adj)
+                if adj_sum > 0:
+                    scale = max(0.0, 1 - cost / adj_sum)
+                    for c in adj:
+                        tgt_val[c] *= scale
                 new_shares = {c: tgt_val[c] / stocks[c]["close"].loc[t] for c in picked}
                 cash = nav_after - sum(tgt_val.values())
 

@@ -191,8 +191,11 @@ with st.sidebar:
         fd_universe = st.slider("탐색 종목 수 (거래대금 상위)", 50, 300, 100, 10, key="fd_universe",
                                 help="리밸런싱 시점마다 그 시점의 20일 평균 거래대금 상위 N종목을 "
                                      "다시 탐색해 유니버스를 재구성합니다.")
-        fd_top = st.slider("편입 종목 수", 3, 10, 5, 1, key="fd_top")
-        fd_rebal = st.selectbox("리밸런싱 주기", list(fund_agent.REBALANCE_OPTIONS), index=1, key="fd_rebal")
+        fd_top = st.slider("편입 종목 수", 3, 20, 10, 1, key="fd_top",
+                           help="진단 결과 5종목 집중은 개별 종목 노이즈가 커서 10~20종목 분산이 더 안정적입니다.")
+        fd_rebal = st.selectbox("리밸런싱 주기", list(fund_agent.REBALANCE_OPTIONS), index=2, key="fd_rebal",
+                                help="보유 종목은 점수 랭크가 편입수×3 밖으로 밀릴 때만 교체(버퍼 규칙)되어 "
+                                     "회전율과 거래비용을 억제합니다.")
         fd_weight = st.selectbox(
             "비중 방식", list(fund_agent.WEIGHT_LABELS.values()), key="fd_weight",
             help="균등: DeMiguel et al.(2009) 1/N — 기본이자 기준선 · "
