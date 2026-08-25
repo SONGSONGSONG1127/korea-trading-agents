@@ -50,6 +50,67 @@ WEIGHT_LABELS = {
     "score":   "점수비례",
 }
 
+# ── 시뮬레이션 로그 (Google Sheets, "_" 접두사 = 시스템 탭) ────────────────
+
+LOG_SHEET = "_펀드시뮬로그"
+LOG_HEADER = [
+    "실행일시", "설정일", "종료일", "운용일수",
+    "유니버스", "편입종목", "리밸주기(일)", "비중방식", "변동성타겟",
+    "누적수익률(%)", "KOSPI(%)", "초과수익(%)", "MDD(%)", "샤프",
+    "평균회전율(%)", "리밸런싱횟수", "최종보유",
+]
+
+
+def _log_ws():
+    """로그 워크시트 반환. 없으면 생성."""
+    import gspread
+    from .portfolio_agent import _spreadsheet
+    sh = _spreadsheet()
+    try:
+        ws = sh.worksheet(LOG_SHEET)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=LOG_SHEET, rows=1000, cols=20)
+        ws.update(values=[LOG_HEADER], range_name="A1")
+        return ws
+    if ws.row_values(1) != LOG_HEADER:
+        ws.update(values=[LOG_HEADER], range_name="A1")
+    return ws
+
+
+def save_log(result: dict) -> None:
+    """run() 결과 한 건을 로그 시트에 한 행으로 추가."""
+    from datetime import datetime
+    m = result["metrics"]
+    p = result["params"]
+    last_names = ""
+    if result["rebalances"]:
+        last_names = ", ".join(h["name"] for h in result["rebalances"][-1]["holdings"])
+    row = [
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        result["start_date"],
+        result["end_date"],
+        m["n_days"],
+        p["n_universe"],
+        p["n_top"],
+        p["rebalance_days"],
+        WEIGHT_LABELS.get(p["weighting"], p["weighting"]),
+        f"{p['vol_target']:.0%}" if p.get("vol_target") else "없음",
+        round(m["cum_return"] * 100, 2),
+        round(m["kospi_cum"] * 100, 2) if m["kospi_cum"] is not None else "",
+        round(m["excess"] * 100, 2) if m["excess"] is not None else "",
+        round(m["mdd"] * 100, 2),
+        round(m["sharpe"], 2) if m["sharpe"] is not None else "",
+        round(m["avg_turnover"] * 100),
+        m["n_rebalances"],
+        last_names,
+    ]
+    _log_ws().append_row(row)
+
+
+def load_logs() -> list[dict]:
+    """저장된 로그 전체를 dict 리스트로 반환 (최신이 마지막 행)."""
+    return _log_ws().get_all_records()
+
 
 def _fetch_kospi(days: int = _FETCH_DAYS) -> pd.DataFrame | None:
     """KOSPI 지수 일봉. 차트 JSON API는 지수 심볼도 지원한다."""

@@ -72,6 +72,7 @@ ss.setdefault("bt_cache", {})       # {code: run_multiperiod_for_code 결과}
 ss.setdefault("pf_quick_add", None) # 포트폴리오 빠른 추가 대상 코드
 ss.setdefault("bd_result", None)    # 백데이터 검증 결과 캐시
 ss.setdefault("fund_result", None)  # 펀드 시뮬레이션 결과 캐시
+ss.setdefault("fund_logs", None)    # 펀드 로그 조회 캐시
 if "code_input" not in ss:
     ss.code_input = "005930"
 if "mode" not in ss:
@@ -1276,6 +1277,12 @@ elif mode == MODE_FUND:
                         ),
                     )
                     result["params_key"] = _params_key
+                    try:
+                        fund_agent.save_log(result)
+                        result["logged"] = True
+                        ss.fund_logs = None   # 다음 조회 시 새로 로드
+                    except Exception:
+                        result["logged"] = False
                     ss.fund_result = result
                     status.update(
                         label=f"✅ 완료 — {result['metrics']['n_days']}거래일 운용, "
@@ -1303,6 +1310,10 @@ elif mode == MODE_FUND:
             f"{_cagr} · 리밸런싱 {m['n_rebalances']}회 · 평균 회전율 {m['avg_turnover']:.0%} · "
             f"후보 풀 {fres['n_scanned']}종목 (리밸런싱마다 유니버스 재탐색)"
         )
+        if fres.get("logged") is True:
+            st.caption("📝 이 실행 결과가 Google Sheets `_펀드시뮬로그` 탭에 저장되었습니다.")
+        elif fres.get("logged") is False:
+            st.caption("⚠️ 로그 저장 실패 — Google Sheets 연결(secrets)을 확인하세요.")
 
         # ── 기준가 차트 (vs KOSPI) ────────────────────────────────────
         dates = [d["date"] for d in daily]
@@ -1384,5 +1395,24 @@ elif mode == MODE_FUND:
         )
     else:
         st.info("왼쪽 사이드바에서 설정일과 운용 방식을 선택하고 **펀드 시뮬레이션 실행** 버튼을 눌러주세요.")
+
+    # ── 시뮬레이션 로그 조회 ──────────────────────────────────────────────
+    with st.expander("📝 시뮬레이션 로그 (지난 실행 기록 비교)"):
+        if st.button("로그 불러오기", key="fd_load_logs"):
+            try:
+                ss.fund_logs = fund_agent.load_logs()
+            except Exception as e:
+                ss.fund_logs = None
+                st.error(f"로그 로드 실패: {e}")
+        logs = ss.get("fund_logs")
+        if logs:
+            df_logs = pd.DataFrame(logs).iloc[::-1]  # 최신이 위로
+            st.dataframe(df_logs, hide_index=True, use_container_width=True)
+            st.caption(
+                f"총 {len(logs)}건 · 매 실행마다 자동 저장 · "
+                "같은 기간을 비중 방식/주기만 바꿔 여러 번 돌리면 이 표에서 바로 비교할 수 있습니다."
+            )
+        elif logs is not None:
+            st.caption("저장된 로그가 없습니다. 시뮬레이션을 실행하면 자동으로 기록됩니다.")
 
 render_disclaimer()

@@ -95,9 +95,12 @@ def _get_worksheet(portfolio: str = DEFAULT_PORTFOLIO):
 # ── 포트폴리오(계좌) 관리 ─────────────────────────────────────────────────
 
 def list_portfolios() -> list[str]:
-    """스프레드시트 탭 이름 목록 반환. 없으면 기본 계좌 생성."""
+    """스프레드시트 탭 이름 목록 반환. 없으면 기본 계좌 생성.
+
+    "_"로 시작하는 탭은 시스템 탭(예: _펀드시뮬로그)이므로 계좌 목록에서 제외.
+    """
     sh = _spreadsheet()
-    titles = [ws.title for ws in sh.worksheets()]
+    titles = [ws.title for ws in sh.worksheets() if not ws.title.startswith("_")]
     if not titles:
         _get_worksheet(DEFAULT_PORTFOLIO)
         return [DEFAULT_PORTFOLIO]
@@ -123,9 +126,10 @@ def rename_portfolio(old_name: str, new_name: str) -> None:
 
 
 def delete_portfolio(name: str) -> None:
-    """계좌(탭) 삭제. 마지막 계좌면 삭제 불가."""
+    """계좌(탭) 삭제. 마지막 계좌면 삭제 불가. (시스템 탭은 계좌 수에서 제외)"""
     sh = _spreadsheet()
-    if len(sh.worksheets()) <= 1:
+    visible = [ws for ws in sh.worksheets() if not ws.title.startswith("_")]
+    if len(visible) <= 1:
         raise ValueError("마지막 계좌는 삭제할 수 없습니다.")
     ws = sh.worksheet(name)
     sh.del_worksheet(ws)
