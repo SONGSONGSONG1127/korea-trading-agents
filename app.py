@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from agents import (backdata_agent, community, fundamental_agent, news_agent,
+from agents import (backdata_agent, community, fund_agent, fundamental_agent, news_agent,
                     portfolio_agent, scoring, screener, strategy_agent, technical_agent)
 
 st.set_page_config(
@@ -61,6 +61,7 @@ MODE_DETAIL    = "🔍 종목 분석"
 MODE_SCREEN    = "🏆 오늘의 후보 종목"
 MODE_PORTFOLIO = "💼 포트폴리오"
 MODE_BACKDATA  = "📅 백데이터 검증"
+MODE_FUND      = "🏦 펀드 시뮬레이션"
 
 ss = st.session_state
 ss.setdefault("results", {})
@@ -70,6 +71,7 @@ ss.setdefault("bt_open", None)      # 현재 열린 백테스트 종목코드
 ss.setdefault("bt_cache", {})       # {code: run_multiperiod_for_code 결과}
 ss.setdefault("pf_quick_add", None) # 포트폴리오 빠른 추가 대상 코드
 ss.setdefault("bd_result", None)    # 백데이터 검증 결과 캐시
+ss.setdefault("fund_result", None)  # 펀드 시뮬레이션 결과 캐시
 if "code_input" not in ss:
     ss.code_input = "005930"
 if "mode" not in ss:
@@ -87,7 +89,7 @@ with st.sidebar:
     st.title("📈 K-TradingAgents")
     st.caption("멀티 에이전트 한국 주식 분석 v4")
 
-    mode = st.radio("모드", [MODE_DETAIL, MODE_SCREEN, MODE_PORTFOLIO, MODE_BACKDATA], key="mode")
+    mode = st.radio("모드", [MODE_DETAIL, MODE_SCREEN, MODE_PORTFOLIO, MODE_BACKDATA, MODE_FUND], key="mode")
     st.divider()
 
     if mode == MODE_DETAIL:
@@ -119,7 +121,7 @@ with st.sidebar:
         run_btn   = False
         st.caption("Google Sheets에 저장된 매수 포지션을 관리합니다.")
         st.caption("손절선 = 매수가 − 1.5×ATR  |  목표가 = 매수가 + 2.0×ATR")
-    else:  # MODE_BACKDATA
+    elif mode == MODE_BACKDATA:
         from datetime import date, timedelta
         scan_btn = False
         run_btn  = False
@@ -149,6 +151,37 @@ with st.sidebar:
         bd_btn = st.button("📅 백데이터 시뮬레이션 실행", type="primary", use_container_width=True)
         st.caption(
             "1년 수익률은 최소 1년 이전 날짜 선택 시 표시됩니다. "
+            "⚠️ 생존 편향: 현재 상장 종목 기준."
+        )
+    else:  # MODE_FUND
+        from datetime import date, timedelta
+        scan_btn = False
+        run_btn  = False
+        st.markdown("**펀드 설정**")
+        fd_start = st.date_input(
+            "펀드 설정일",
+            value=date.today() - timedelta(days=365),
+            min_value=date.today() - timedelta(days=700),
+            max_value=date.today() - timedelta(days=40),
+            key="fd_start",
+            help="이 날짜에 펀드를 설정했다면 오늘까지 어떻게 운용됐을지 시뮬레이션합니다.",
+        )
+        fd_universe = st.slider("탐색 종목 수 (거래대금 상위)", 50, 300, 100, 10, key="fd_universe")
+        fd_top = st.slider("편입 종목 수", 3, 10, 5, 1, key="fd_top")
+        fd_rebal = st.selectbox("리밸런싱 주기", list(fund_agent.REBALANCE_OPTIONS), index=1, key="fd_rebal")
+        fd_weight = st.selectbox(
+            "비중 방식", list(fund_agent.WEIGHT_LABELS.values()), key="fd_weight",
+            help="균등: DeMiguel et al.(2009) 1/N — 기본이자 기준선 · "
+                 "역변동성: 리스크 패리티(Maillard et al. 2010), 변동성 낮은 종목에 더 배분 · "
+                 "점수비례: 기술점수에 비례 배분(모멘텀 공격형)",
+        )
+        fd_voltgt = st.checkbox(
+            "변동성 타겟팅 (연 15%)", value=False, key="fd_voltgt",
+            help="Moreira & Muir (2017): KOSPI 20일 변동성이 목표를 넘으면 주식 비중을 줄이고 현금 보유. 하락장 방어용.",
+        )
+        fd_btn = st.button("🏦 펀드 시뮬레이션 실행", type="primary", use_container_width=True)
+        st.caption(
+            "거래비용 편도 0.3% 반영 (수수료+세금+슬리피지) · 기준가 1,000원 시작 · "
             "⚠️ 생존 편향: 현재 상장 종목 기준."
         )
 
@@ -1188,5 +1221,145 @@ elif mode == MODE_BACKDATA:
 
     else:
         st.info("왼쪽 사이드바에서 날짜를 선택하고 **백데이터 시뮬레이션 실행** 버튼을 눌러주세요.")
+
+elif mode == MODE_FUND:
+    st.title("🏦 펀드 시뮬레이션")
+    st.caption(
+        "설정일부터 오늘까지 스크리너 상위 종목으로 주기적 리밸런싱하며 운용했을 때의 "
+        "펀드 성과입니다. 기준가 1,000원 시작, 거래비용 편도 0.3% 반영."
+    )
+
+    _weight_key = {v: k for k, v in fund_agent.WEIGHT_LABELS.items()}[fd_weight]
+    _rebal_days = fund_agent.REBALANCE_OPTIONS[fd_rebal]
+    _params_key = f"{fd_start}|{fd_universe}|{fd_top}|{_rebal_days}|{_weight_key}|{fd_voltgt}"
+
+    if fd_btn:
+        ss.fund_result = None
+
+    if fd_btn or (ss.fund_result and ss.fund_result.get("params_key") == _params_key):
+        if not ss.fund_result or ss.fund_result.get("params_key") != _params_key:
+            with st.status(f"🏦 {fd_start} 설정 펀드 시뮬레이션...", expanded=True) as status:
+                bar = st.progress(0.0, text="유니버스 데이터 로드 준비 중...")
+                try:
+                    result = fund_agent.run(
+                        start_date_str=str(fd_start),
+                        n_universe=fd_universe,
+                        n_top=fd_top,
+                        rebalance_days=_rebal_days,
+                        weighting=_weight_key,
+                        vol_target=0.15 if fd_voltgt else None,
+                        progress=lambda i, t, name: bar.progress(
+                            i / t, text=f"데이터 로드 {i}/{t} — {name}"
+                        ),
+                    )
+                    result["params_key"] = _params_key
+                    ss.fund_result = result
+                    status.update(
+                        label=f"✅ 완료 — {result['metrics']['n_days']}거래일 운용, "
+                              f"리밸런싱 {result['metrics']['n_rebalances']}회",
+                        state="complete", expanded=False,
+                    )
+                except Exception as e:
+                    st.error(f"시뮬레이션 오류: {e}")
+                    ss.fund_result = None
+
+    fres = ss.fund_result
+    if fres and fres.get("params_key") == _params_key:
+        m = fres["metrics"]
+        daily = fres["daily"]
+
+        # ── 성과 카드 ─────────────────────────────────────────────────
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("누적수익률", f"{m['cum_return']:+.1%}")
+        c2.metric("KOSPI 대비 초과", f"{m['excess']:+.1%}" if m["excess"] is not None else "N/A")
+        c3.metric("최대낙폭 (MDD)", f"{m['mdd']:.1%}")
+        c4.metric("샤프", f"{m['sharpe']:.2f}" if m["sharpe"] is not None else "N/A")
+        _cagr = f"연환산 {m['cagr']:+.1%}" if m["cagr"] is not None else ""
+        st.caption(
+            f"{fres['start_date']} ~ {fres['end_date']} · {m['n_days']}거래일 · "
+            f"{_cagr} · 리밸런싱 {m['n_rebalances']}회 · 평균 회전율 {m['avg_turnover']:.0%} · "
+            f"탐색 {fres['n_scanned']}종목"
+        )
+
+        # ── 기준가 차트 (vs KOSPI) ────────────────────────────────────
+        dates = [d["date"] for d in daily]
+        navs  = [d["nav"] * 1000 for d in daily]
+        fig_f = go.Figure()
+        fig_f.add_scatter(x=dates, y=navs, name="펀드 기준가", mode="lines",
+                          line=dict(color="#d32f2f", width=2))
+        kospi0 = next((d["kospi"] for d in daily if d["kospi"] is not None), None)
+        if kospi0:
+            fig_f.add_scatter(
+                x=dates,
+                y=[d["kospi"] / kospi0 * 1000 if d["kospi"] is not None else None for d in daily],
+                name="KOSPI (1,000 환산)", mode="lines",
+                line=dict(color="rgba(128,128,128,0.7)", width=1.5, dash="dot"),
+            )
+        fig_f.add_hline(y=1000, line_dash="dash", line_color="gray", line_width=1)
+        fig_f.update_layout(
+            height=340, margin=dict(l=0, r=0, t=20, b=0),
+            yaxis_title="기준가 (원)",
+            legend=dict(orientation="h", y=1.1),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        )
+        fig_f.update_yaxes(gridcolor="rgba(128,128,128,0.15)")
+        st.plotly_chart(fig_f, use_container_width=True)
+
+        # ── 날짜별 운용 현황 ──────────────────────────────────────────
+        st.markdown("#### 날짜별 운용 현황")
+        sel_date = st.select_slider("조회 날짜", options=dates, value=dates[-1], key="fd_sel_date")
+        sel_day = next(d for d in daily if d["date"] == sel_date)
+        ev = None
+        for r in fres["rebalances"]:
+            if r["date"] <= sel_date:
+                ev = r
+            else:
+                break
+
+        st.markdown(
+            f"**기준가 {sel_day['nav'] * 1000:,.0f}원** "
+            f"({(sel_day['nav'] - 1) * 100:+.1f}%)"
+            + (f" · 주식비중 {ev['equity_frac']:.0%}" if ev else "")
+        )
+        if ev:
+            pos_px = fres["positions_daily"].get(sel_date, {})
+            h_rows = []
+            for h in ev["holdings"]:
+                cur = pos_px.get(h["code"])
+                h_rows.append({
+                    "종목":       f"{h['name']}({h['code']})",
+                    "비중(설정)": f"{h['weight']:.0%}",
+                    "편입일":     ev["date"],
+                    "편입가":     f"{h['price']:,.0f}",
+                    "조회일 종가": f"{cur:,.0f}" if cur else "—",
+                    "수익률":     f"{(cur / h['price'] - 1):+.1%}" if cur else "—",
+                    "편입시 점수": f"{h['score']:+.2f}",
+                })
+            st.dataframe(pd.DataFrame(h_rows), hide_index=True, use_container_width=True)
+            if ev["date"] == sel_date and (ev["entries"] or ev["exits"]):
+                _in  = ", ".join(ev["entries"]) or "없음"
+                _out = ", ".join(ev["exits"]) or "없음"
+                st.caption(f"🔄 이날 리밸런싱 — 편입: {_in} · 편출: {_out}")
+
+        # ── 리밸런싱 히스토리 ─────────────────────────────────────────
+        with st.expander(f"리밸런싱 히스토리 ({m['n_rebalances']}회)"):
+            r_rows = []
+            for i, r in enumerate(fres["rebalances"]):
+                r_rows.append({
+                    "날짜":     r["date"],
+                    "보유":     ", ".join(h["name"] for h in r["holdings"]),
+                    "편입":     ", ".join(r["entries"]) if i > 0 else "(최초 설정)",
+                    "편출":     ", ".join(r["exits"]) or "—",
+                    "회전율":   f"{r['turnover']:.0%}",
+                    "주식비중": f"{r['equity_frac']:.0%}",
+                })
+            st.dataframe(pd.DataFrame(r_rows), hide_index=True, use_container_width=True)
+
+        st.caption(
+            "⚠️ 생존 편향(현재 상장 종목 기준) · 리밸런싱은 기술점수만 사용 (뉴스·펀더멘탈은 과거 재현 불가) · "
+            "종가 체결 가정, 거래비용 편도 0.3% 반영"
+        )
+    else:
+        st.info("왼쪽 사이드바에서 설정일과 운용 방식을 선택하고 **펀드 시뮬레이션 실행** 버튼을 눌러주세요.")
 
 render_disclaimer()
