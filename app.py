@@ -158,16 +158,26 @@ with st.sidebar:
         scan_btn = False
         run_btn  = False
         st.markdown("**펀드 설정**")
+        if "fd_start" not in ss:
+            ss.fd_start = date.today() - timedelta(days=365)
+
+        def _fd_preset(days: int) -> None:
+            ss.fd_start = date.today() - timedelta(days=days)
+
         fd_start = st.date_input(
             "펀드 설정일",
-            value=date.today() - timedelta(days=365),
             min_value=date.today() - timedelta(days=700),
             max_value=date.today() - timedelta(days=15),
             key="fd_start",
             help="이 날짜에 펀드를 설정했다면 오늘까지 어떻게 운용됐을지 시뮬레이션합니다. "
-                 "최근 날짜로 단기 검증도 가능 — 단, 기간이 리밸런싱 주기보다 짧으면 실행되지 않으니 "
-                 "2~4주 검증은 리밸런싱 주기를 1주로 두세요.",
+                 "달력 대신 아래 빠른 설정 버튼이나 직접 입력(YYYY/MM/DD)도 가능합니다. "
+                 "2~4주 단기 검증은 리밸런싱 주기를 1주로 두세요.",
         )
+        _c1, _c2, _c3, _c4 = st.columns(4)
+        _c1.button("1달", on_click=_fd_preset, args=(30,), use_container_width=True)
+        _c2.button("3달", on_click=_fd_preset, args=(91,), use_container_width=True)
+        _c3.button("6달", on_click=_fd_preset, args=(182,), use_container_width=True)
+        _c4.button("1년", on_click=_fd_preset, args=(365,), use_container_width=True)
         fd_universe = st.slider("탐색 종목 수 (거래대금 상위)", 50, 300, 100, 10, key="fd_universe",
                                 help="리밸런싱 시점마다 그 시점의 20일 평균 거래대금 상위 N종목을 "
                                      "다시 탐색해 유니버스를 재구성합니다.")
