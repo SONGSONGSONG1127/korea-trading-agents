@@ -166,7 +166,9 @@ with st.sidebar:
             key="fd_start",
             help="이 날짜에 펀드를 설정했다면 오늘까지 어떻게 운용됐을지 시뮬레이션합니다.",
         )
-        fd_universe = st.slider("탐색 종목 수 (거래대금 상위)", 50, 300, 100, 10, key="fd_universe")
+        fd_universe = st.slider("탐색 종목 수 (거래대금 상위)", 50, 300, 100, 10, key="fd_universe",
+                                help="리밸런싱 시점마다 그 시점의 20일 평균 거래대금 상위 N종목을 "
+                                     "다시 탐색해 유니버스를 재구성합니다.")
         fd_top = st.slider("편입 종목 수", 3, 10, 5, 1, key="fd_top")
         fd_rebal = st.selectbox("리밸런싱 주기", list(fund_agent.REBALANCE_OPTIONS), index=1, key="fd_rebal")
         fd_weight = st.selectbox(
@@ -1225,8 +1227,8 @@ elif mode == MODE_BACKDATA:
 elif mode == MODE_FUND:
     st.title("🏦 펀드 시뮬레이션")
     st.caption(
-        "설정일부터 오늘까지 스크리너 상위 종목으로 주기적 리밸런싱하며 운용했을 때의 "
-        "펀드 성과입니다. 기준가 1,000원 시작, 거래비용 편도 0.3% 반영."
+        "설정일부터 오늘까지, 리밸런싱 시점마다 스크리너를 새로 돌려(그 시점 거래대금 상위 유니버스 재구성 → "
+        "기술점수 상위 편입) 운용했을 때의 펀드 성과입니다. 기준가 1,000원 시작, 거래비용 편도 0.3% 반영."
     )
 
     _weight_key = {v: k for k, v in fund_agent.WEIGHT_LABELS.items()}[fd_weight]
@@ -1278,7 +1280,7 @@ elif mode == MODE_FUND:
         st.caption(
             f"{fres['start_date']} ~ {fres['end_date']} · {m['n_days']}거래일 · "
             f"{_cagr} · 리밸런싱 {m['n_rebalances']}회 · 평균 회전율 {m['avg_turnover']:.0%} · "
-            f"탐색 {fres['n_scanned']}종목"
+            f"후보 풀 {fres['n_scanned']}종목 (리밸런싱마다 유니버스 재탐색)"
         )
 
         # ── 기준가 차트 (vs KOSPI) ────────────────────────────────────

@@ -5,6 +5,12 @@
 과거 설정일부터 오늘까지, 스크리너(기술점수 상위 N종목)를 주기적으로 리밸런싱하며
 운용했을 때의 펀드 성과를 시뮬레이션한다. 기준가 1,000원 시작.
 
+리밸런싱마다 유니버스를 재구성한다:
+  후보 풀(현재 시총 상위, 유니버스의 2배)을 로드해 두고, 각 리밸런싱 시점의
+  20일 평균 거래대금 상위 n_universe 종목을 그 시점 유니버스로 삼아 채점한다.
+  → 실전에서 리밸런싱 날 스크리너를 새로 돌리는 것과 동일한 로직.
+  (한계: 풀 자체는 현재 상장·상위 종목 기준 — 생존 편향은 남는다)
+
 비중 방식 (펀드 이론 근거):
   equal   : 균등 1/N — DeMiguel, Garlappi & Uppal (2009). 최적화 모델 대부분이
             추정 오차 때문에 1/N을 못 이긴다는 결과. 기본값이자 기준선.
@@ -85,7 +91,7 @@ def run(
 ) -> dict:
     """
     start_date_str : 펀드 설정일 "YYYY-MM-DD"
-    n_universe     : 거래대금 상위 탐색 종목 수
+    n_universe     : 리밸런싱 시점마다 재구성하는 거래대금 상위 유니버스 크기
     n_top          : 편입 종목 수
     rebalance_days : 리밸런싱 주기 (거래일)
     weighting      : "equal" | "inv_vol" | "score"
@@ -94,9 +100,11 @@ def run(
     """
     start_ts = pd.Timestamp(start_date_str)
 
-    # ── 1. 유니버스 가격 데이터 로드 (유일하게 느린 구간) ────────────────
-    leaders = _market_leaders(kospi_pages=6, kosdaq_pages=4)[:n_universe]
-    stocks: dict[str, dict] = {}   # code -> {name, close(al), score(al), ret(al)}
+    # ── 1. 후보 풀 가격 데이터 로드 (유일하게 느린 구간) ──────────────────
+    # 유니버스는 리밸런싱 시점마다 다시 구성하므로, 넉넉한 풀(유니버스 2배)을 로드해 둔다.
+    pool_n = min(500, max(n_universe * 2, n_universe + 50))
+    leaders = _market_leaders(kospi_pages=6, kosdaq_pages=4)[:pool_n]
+    stocks: dict[str, dict] = {}   # code -> {close(al), score(al), ret(al), value(al), min_date}
     names: dict[str, str] = {}
 
     kospi_df = _fetch_kospi()
@@ -109,7 +117,7 @@ def run(
             df = technical_agent.fetch_daily_prices_fast(cand.code, days=_FETCH_DAYS)
             df = df.copy()
             df["date"] = pd.to_datetime(df["date"])
-            if (df["date"] <= start_ts).sum() < _MIN_HISTORY:
+            if len(df) < _MIN_HISTORY:
                 continue
             raw[cand.code] = df
             names[cand.code] = cand.name
@@ -118,7 +126,7 @@ def run(
         time.sleep(0.05)
 
     if not raw:
-        raise ValueError("설정일 이전 데이터가 충분한 종목이 없습니다. 설정일을 조정해 주세요.")
+        raise ValueError("가격 데이터를 가져올 수 있는 종목이 없습니다. 잠시 후 다시 시도해 주세요.")
 
     # ── 2. 거래일 캘린더 (KOSPI 기준, 폴백: 데이터 최다 종목) ─────────────
     if kospi_df is not None:
@@ -135,18 +143,25 @@ def run(
     if len(calendar) < rebalance_days + 2:
         raise ValueError("설정일 이후 거래일이 너무 적습니다. 더 이전 날짜를 선택해 주세요.")
 
-    # ── 3. 종목별 점수·가격 시계열 사전 계산 (전부 인과 지표) ─────────────
+    # ── 3. 종목별 점수·가격·거래대금 시계열 사전 계산 (전부 인과 지표) ────
     for code, df in raw.items():
         enriched = technical_agent.enrich(df.copy())
         score = backtest.score_series(enriched)
         score.index = df["date"].values
         close = df.set_index("date")["close"]
+        # 20일 평균 거래대금 — 리밸런싱 시점의 유니버스(유동성 상위) 재구성용
+        value = (df["close"] * df["volume"]).rolling(20).mean()
+        value.index = df["date"].values
         close_al = close.reindex(calendar.values).ffill()
         score_al = score.reindex(calendar.values).ffill()
+        value_al = value.reindex(calendar.values).ffill()
         stocks[code] = {
-            "close": close_al,
-            "score": score_al,
-            "ret":   close_al.pct_change(),
+            "close":    close_al,
+            "score":    score_al,
+            "value":    value_al,
+            "ret":      close_al.pct_change(),
+            # 상장 후 최소 이력(_MIN_HISTORY 거래일)이 쌓인 날짜부터 편입 가능
+            "min_date": pd.Timestamp(df["date"].iloc[_MIN_HISTORY - 1]),
         }
 
     kospi_al = None
@@ -173,12 +188,23 @@ def run(
                          if not pd.isna(stocks[c]["close"].loc[t]))
 
         if idx in rebalance_idx:
-            # ── 종목 선정: 당일 점수 상위 n_top ──────────────────────────
-            cand_scores = {}
+            # ── 유니버스 재구성: 그 시점 20일 평균 거래대금 상위 n_universe ──
+            # (실전에서 그날 스크리너를 돌리는 것과 동일한 로직)
+            eligible = {}
             for c, s in stocks.items():
-                sc = s["score"].loc[t]
+                if s["min_date"] > t:
+                    continue  # 아직 상장 이력 부족
+                val = s["value"].loc[t]
                 px = s["close"].loc[t]
-                if not pd.isna(sc) and not pd.isna(px) and px > 0:
+                if not pd.isna(val) and not pd.isna(px) and px > 0:
+                    eligible[c] = float(val)
+            universe = sorted(eligible, key=eligible.get, reverse=True)[:n_universe]
+
+            # ── 종목 선정: 유니버스 내 당일 점수 상위 n_top ──────────────
+            cand_scores = {}
+            for c in universe:
+                sc = stocks[c]["score"].loc[t]
+                if not pd.isna(sc):
                     cand_scores[c] = float(sc)
             picked = sorted(cand_scores, key=cand_scores.get, reverse=True)[:n_top]
 
@@ -271,7 +297,7 @@ def run(
             "vol_target":     vol_target,
             "cost_rate":      cost_rate,
         },
-        "n_scanned":       len(stocks),
+        "n_scanned":       len(stocks),   # 후보 풀 크기 (유니버스는 리밸런싱마다 이 중 상위 n_universe)
         "daily":           daily,
         "positions_daily": positions_daily,
         "rebalances":      rebalances,
