@@ -162,9 +162,11 @@ with st.sidebar:
             "펀드 설정일",
             value=date.today() - timedelta(days=365),
             min_value=date.today() - timedelta(days=700),
-            max_value=date.today() - timedelta(days=40),
+            max_value=date.today() - timedelta(days=15),
             key="fd_start",
-            help="이 날짜에 펀드를 설정했다면 오늘까지 어떻게 운용됐을지 시뮬레이션합니다.",
+            help="이 날짜에 펀드를 설정했다면 오늘까지 어떻게 운용됐을지 시뮬레이션합니다. "
+                 "최근 날짜로 단기 검증도 가능 — 단, 기간이 리밸런싱 주기보다 짧으면 실행되지 않으니 "
+                 "2~4주 검증은 리밸런싱 주기를 1주로 두세요.",
         )
         fd_universe = st.slider("탐색 종목 수 (거래대금 상위)", 50, 300, 100, 10, key="fd_universe",
                                 help="리밸런싱 시점마다 그 시점의 20일 평균 거래대금 상위 N종목을 "
