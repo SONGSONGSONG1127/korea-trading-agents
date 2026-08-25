@@ -158,26 +158,35 @@ with st.sidebar:
         scan_btn = False
         run_btn  = False
         st.markdown("**펀드 설정**")
-        if "fd_start" not in ss:
-            ss.fd_start = date.today() - timedelta(days=365)
-
-        def _fd_preset(days: int) -> None:
-            ss.fd_start = date.today() - timedelta(days=days)
-
-        fd_start = st.date_input(
-            "펀드 설정일",
-            min_value=date.today() - timedelta(days=700),
-            max_value=date.today() - timedelta(days=15),
-            key="fd_start",
-            help="이 날짜에 펀드를 설정했다면 오늘까지 어떻게 운용됐을지 시뮬레이션합니다. "
-                 "달력 대신 아래 빠른 설정 버튼이나 직접 입력(YYYY/MM/DD)도 가능합니다. "
-                 "2~4주 단기 검증은 리밸런싱 주기를 1주로 두세요.",
+        _period_opts = {
+            "3주": 21, "1달": 30, "2달": 61, "3달": 91, "6달": 182,
+            "9달": 274, "1년": 365, "1.5년": 548, "2년": 700,
+        }
+        fd_period = st.select_slider(
+            "운용 기간 (설정일 → 오늘)",
+            options=list(_period_opts), value="1년", key="fd_period",
+            help="이 기간만큼 과거에 펀드를 설정했다면 오늘까지 어떻게 운용됐을지 시뮬레이션합니다. "
+                 "3주~1달 단기 검증은 리밸런싱 주기를 1주로 두세요.",
         )
-        _c1, _c2, _c3, _c4 = st.columns(4)
-        _c1.button("1달", on_click=_fd_preset, args=(30,), use_container_width=True)
-        _c2.button("3달", on_click=_fd_preset, args=(91,), use_container_width=True)
-        _c3.button("6달", on_click=_fd_preset, args=(182,), use_container_width=True)
-        _c4.button("1년", on_click=_fd_preset, args=(365,), use_container_width=True)
+        fd_start = date.today() - timedelta(days=_period_opts[fd_period])
+
+        fd_custom = st.text_input(
+            "특정 설정일 직접 입력 (선택)", value="", key="fd_custom",
+            placeholder="예: 2026-02-25",
+            help="YYYY-MM-DD 형식. 입력하면 위 기간 선택보다 우선합니다.",
+        )
+        if fd_custom.strip():
+            _lo = date.today() - timedelta(days=700)
+            _hi = date.today() - timedelta(days=15)
+            try:
+                _d = pd.to_datetime(fd_custom.strip()).date()
+                if _lo <= _d <= _hi:
+                    fd_start = _d
+                else:
+                    st.warning(f"설정일은 {_lo} ~ {_hi} 범위여야 합니다. 기간 선택값을 사용합니다.")
+            except (ValueError, TypeError):
+                st.warning("날짜 형식이 올바르지 않습니다 (예: 2026-02-25). 기간 선택값을 사용합니다.")
+        st.caption(f"📅 설정일: **{fd_start}** → 오늘")
         fd_universe = st.slider("탐색 종목 수 (거래대금 상위)", 50, 300, 100, 10, key="fd_universe",
                                 help="리밸런싱 시점마다 그 시점의 20일 평균 거래대금 상위 N종목을 "
                                      "다시 탐색해 유니버스를 재구성합니다.")
