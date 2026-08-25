@@ -206,6 +206,11 @@ with st.sidebar:
             "변동성 타겟팅 (연 15%)", value=False, key="fd_voltgt",
             help="Moreira & Muir (2017): KOSPI 20일 변동성이 목표를 넘으면 주식 비중을 줄이고 현금 보유. 하락장 방어용.",
         )
+        fd_stop = st.checkbox(
+            "손절 서킷브레이커 (−2.5×ATR)", value=False, key="fd_stop",
+            help="리밸런싱일 사이에도 매일 점검해, 종목이 편입가 − 2.5×ATR을 하회하면 즉시 현금화. "
+                 "추세 하락장 방어용이지만 V자 반등 장세에선 휩쏘 비용이 발생할 수 있습니다 (Kaminski & Lo 2014).",
+        )
         fd_btn = st.button("🏦 펀드 시뮬레이션 실행", type="primary", use_container_width=True)
         st.caption(
             "거래비용 편도 0.3% 반영 (수수료+세금+슬리피지) · 기준가 1,000원 시작 · "
@@ -1258,7 +1263,7 @@ elif mode == MODE_FUND:
 
     _weight_key = {v: k for k, v in fund_agent.WEIGHT_LABELS.items()}[fd_weight]
     _rebal_days = fund_agent.REBALANCE_OPTIONS[fd_rebal]
-    _params_key = f"{fd_start}|{fd_universe}|{fd_top}|{_rebal_days}|{_weight_key}|{fd_voltgt}"
+    _params_key = f"{fd_start}|{fd_universe}|{fd_top}|{_rebal_days}|{_weight_key}|{fd_voltgt}|{fd_stop}"
 
     if fd_btn:
         ss.fund_result = None
@@ -1275,6 +1280,7 @@ elif mode == MODE_FUND:
                         rebalance_days=_rebal_days,
                         weighting=_weight_key,
                         vol_target=0.15 if fd_voltgt else None,
+                        stop_atr=2.5 if fd_stop else None,
                         progress=lambda i, t, name: bar.progress(
                             i / t, text=f"데이터 로드 {i}/{t} — {name}"
                         ),
@@ -1377,6 +1383,18 @@ elif mode == MODE_FUND:
                 _in  = ", ".join(ev["entries"]) or "없음"
                 _out = ", ".join(ev["exits"]) or "없음"
                 st.caption(f"🔄 이날 리밸런싱 — 편입: {_in} · 편출: {_out}")
+
+        # ── 손절 발동 내역 ────────────────────────────────────────────
+        if fres.get("stops"):
+            with st.expander(f"⛔ 손절 발동 내역 ({len(fres['stops'])}회)"):
+                stop_rows = [{
+                    "날짜":   s["date"],
+                    "종목":   f"{s['name']}({s['code']})",
+                    "편입가": f"{s['entry']:,.0f}",
+                    "손절가": f"{s['exit']:,.0f}",
+                    "손실률": f"{s['loss_pct']:+.1%}",
+                } for s in fres["stops"]]
+                st.dataframe(pd.DataFrame(stop_rows), hide_index=True, use_container_width=True)
 
         # ── 리밸런싱 히스토리 ─────────────────────────────────────────
         with st.expander(f"리밸런싱 히스토리 ({m['n_rebalances']}회)"):

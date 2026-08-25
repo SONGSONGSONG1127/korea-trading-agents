@@ -61,9 +61,9 @@ WEIGHT_LABELS = {
 LOG_SHEET = "_펀드시뮬로그"
 LOG_HEADER = [
     "실행일시", "설정일", "종료일", "운용일수",
-    "유니버스", "편입종목", "리밸주기(일)", "비중방식", "변동성타겟",
+    "유니버스", "편입종목", "리밸주기(일)", "비중방식", "변동성타겟", "손절",
     "누적수익률(%)", "KOSPI(%)", "초과수익(%)", "MDD(%)", "샤프",
-    "평균회전율(%)", "리밸런싱횟수", "최종보유",
+    "평균회전율(%)", "리밸런싱횟수", "손절횟수", "최종보유",
 ]
 
 
@@ -101,6 +101,7 @@ def save_log(result: dict) -> None:
         p["rebalance_days"],
         WEIGHT_LABELS.get(p["weighting"], p["weighting"]),
         f"{p['vol_target']:.0%}" if p.get("vol_target") else "없음",
+        f"{p['stop_atr']}×ATR" if p.get("stop_atr") else "없음",
         round(m["cum_return"] * 100, 2),
         round(m["kospi_cum"] * 100, 2) if m["kospi_cum"] is not None else "",
         round(m["excess"] * 100, 2) if m["excess"] is not None else "",
@@ -108,6 +109,7 @@ def save_log(result: dict) -> None:
         round(m["sharpe"], 2) if m["sharpe"] is not None else "",
         round(m["avg_turnover"] * 100),
         m["n_rebalances"],
+        m.get("n_stops", 0),
         last_names,
     ]
     _log_ws().append_row(row)
@@ -153,6 +155,7 @@ def run(
     rebalance_days: int = 10,
     weighting: str = "equal",
     vol_target: float | None = None,
+    stop_atr: float | None = None,
     cost_rate: float = 0.003,
     progress: ProgressCb = None,
 ) -> dict:
@@ -163,6 +166,8 @@ def run(
     rebalance_days : 리밸런싱 주기 (거래일)
     weighting      : "equal" | "inv_vol" | "score"
     vol_target     : 연 목표 변동성 (예: 0.15). None이면 항상 100% 주식
+    stop_atr       : 손절 서킷브레이커 배수 (예: 2.5 → 편입가 − 2.5×ATR 하회 시
+                     즉시 현금화, 다음 리밸런싱까지 대기). None이면 손절 없음
     cost_rate      : 편도 거래비용 (수수료+세금+슬리피지)
     """
     start_ts = pd.Timestamp(start_date_str)
@@ -215,6 +220,8 @@ def run(
         enriched = technical_agent.enrich(df.copy())
         score = backtest.score_series(enriched)
         score.index = df["date"].values
+        atr = enriched["atr"].copy()
+        atr.index = df["date"].values
         close = df.set_index("date")["close"]
         # 20일 평균 거래대금 — 리밸런싱 시점의 유니버스(유동성 상위) 재구성용
         value = (df["close"] * df["volume"]).rolling(20).mean()
@@ -222,10 +229,12 @@ def run(
         close_al = close.reindex(calendar.values).ffill()
         score_al = score.reindex(calendar.values).ffill()
         value_al = value.reindex(calendar.values).ffill()
+        atr_al   = atr.reindex(calendar.values).ffill()
         stocks[code] = {
             "close":    close_al,
             "score":    score_al,
             "value":    value_al,
+            "atr":      atr_al,
             "ret":      close_al.pct_change(),
             # 상장 후 최소 이력(_MIN_HISTORY 거래일)이 쌓인 날짜부터 편입 가능
             "min_date": pd.Timestamp(df["date"].iloc[_MIN_HISTORY - 1]),
@@ -241,13 +250,33 @@ def run(
     rebalance_idx = set(range(0, len(calendar), rebalance_days))
     cash = 1.0                       # NAV를 1.0에서 시작 (기준가 1,000원 = ×1000)
     shares: dict[str, float] = {}
+    entry_info: dict[str, dict] = {}  # code -> {entry, stop} (손절 서킷브레이커용)
     daily: list[dict] = []
     positions_daily: dict[str, dict] = {}
     rebalances: list[dict] = []
+    stops: list[dict] = []
 
     for idx, t in enumerate(calendar.values):
         t = pd.Timestamp(t)
         t_str = str(t.date())
+
+        # ── 손절 서킷브레이커: 리밸런싱일 사이 일별 점검 ─────────────────
+        if stop_atr and shares and idx not in rebalance_idx:
+            for c in list(shares):
+                px = stocks[c]["close"].loc[t]
+                info = entry_info.get(c)
+                if info and info["stop"] > 0 and not pd.isna(px) and px <= info["stop"]:
+                    cash += shares[c] * px * (1 - cost_rate)
+                    stops.append({
+                        "date":     t_str,
+                        "code":     c,
+                        "name":     names[c],
+                        "entry":    info["entry"],
+                        "exit":     float(px),
+                        "loss_pct": float(px / info["entry"] - 1),
+                    })
+                    del shares[c]
+                    entry_info.pop(c, None)
 
         # 평가 (당일 종가)
         nav = cash + sum(sh * stocks[c]["close"].loc[t]
@@ -328,6 +357,18 @@ def run(
                 shares = new_shares
                 nav = nav_after
 
+                # 손절선 갱신: 신규 편입 종목은 편입가 기준으로 설정, 편출 종목은 제거
+                if stop_atr:
+                    for c in picked:
+                        if c not in prev_set or c not in entry_info:
+                            px = float(stocks[c]["close"].loc[t])
+                            a = stocks[c]["atr"].loc[t]
+                            entry_info[c] = {
+                                "entry": px,
+                                "stop":  px - stop_atr * float(a) if not pd.isna(a) else 0.0,
+                            }
+                    entry_info = {c: v for c, v in entry_info.items() if c in picked}
+
                 rebalances.append({
                     "date":        t_str,
                     "holdings":    [{
@@ -380,8 +421,10 @@ def run(
             "rebalance_days": rebalance_days,
             "weighting":      weighting,
             "vol_target":     vol_target,
+            "stop_atr":       stop_atr,
             "cost_rate":      cost_rate,
         },
+        "stops":           stops,
         "n_scanned":       len(stocks),   # 후보 풀 크기 (유니버스는 리밸런싱마다 이 중 상위 n_universe)
         "daily":           daily,
         "positions_daily": positions_daily,
@@ -396,6 +439,7 @@ def run(
             "excess":       cum - kospi_cum if kospi_cum is not None else None,
             "avg_turnover": float(np.mean(turnovers)) if turnovers else 0.0,
             "n_rebalances": len(rebalances),
+            "n_stops":      len(stops),
             "n_days":       n_days,
         },
     }
