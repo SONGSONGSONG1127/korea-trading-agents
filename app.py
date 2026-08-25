@@ -65,6 +65,20 @@ MODE_FUND      = "🏦 펀드 시뮬레이션"
 MODE_DISCOUNT  = "💎 할인찬스"
 
 ss = st.session_state
+
+
+@st.cache_resource
+def _global_store() -> dict:
+    """앱 프로세스 수준의 결과 보관소.
+
+    브라우저 뒤로가기·새로고침으로 Streamlit 세션이 끊겨도, 앱 프로세스가 살아 있는 동안
+    마지막 스크리닝/시뮬레이션 결과를 여기서 복원한다. (앱 재시작 시엔 초기화)
+    """
+    return {}
+
+
+_PERSIST_KEYS = ("results", "screener", "bd_result", "fund_result", "dc_result", "last_analyzed")
+
 ss.setdefault("results", {})
 ss.setdefault("last_analyzed", None)
 ss.setdefault("screener", None)
@@ -79,6 +93,16 @@ if "code_input" not in ss:
     ss.code_input = "005930"
 if "mode" not in ss:
     ss.mode = MODE_DETAIL
+
+# ── 세션 복원/보관: 재접속해도 마지막 결과 유지 ─────────────────────────
+_store = _global_store()
+for _k in _PERSIST_KEYS:
+    if not ss.get(_k) and _store.get(_k):
+        ss[_k] = _store[_k]          # 새 세션 → 이전 결과 복원
+for _k in _PERSIST_KEYS:
+    if ss.get(_k):
+        _store[_k] = ss[_k]          # 현재 결과를 보관소에 동기화
+_store["results"] = ss.results       # dict는 참조 공유 → 이후 분석 결과 자동 반영
 
 
 def goto_detail(code: str) -> None:
@@ -335,6 +359,13 @@ def render_fundamental(fund) -> None:
     if fund.pbr is not None:
         pbr_color = UP_COLOR if fund.pbr < 1.0 else (DOWN_COLOR if fund.pbr > 3.0 else "#f9a825")
         chips.append(f'<span class="fund-chip">PBR <b style="color:{pbr_color}">{fund.pbr:.2f}배</b></span>')
+    if fund.pbr and fund.pbr > 0 and fund.roe and fund.roe > 0:
+        # 고든 성장모형: 적정 PBR = ROE / 요구수익률(8%)
+        _fair = fund.roe / 8.0
+        _disc = (_fair - fund.pbr) / _fair * 100
+        fp_color = UP_COLOR if _disc >= 20 else (DOWN_COLOR if _disc <= -20 else "#f9a825")
+        chips.append(f'<span class="fund-chip">적정PBR({_fair:.1f}) 대비 '
+                     f'<b style="color:{fp_color}">{_disc:+.0f}%</b></span>')
     if fund.roe is not None:
         roe_color = UP_COLOR if fund.roe >= 15 else (DOWN_COLOR if fund.roe < 5 else "#f9a825")
         chips.append(f'<span class="fund-chip">ROE <b style="color:{roe_color}">{fund.roe:.1f}%</b></span>')
@@ -360,6 +391,11 @@ def render_fundamental(fund) -> None:
     if chips:
         st.markdown(f'<div class="fund-row">{"".join(chips)}</div>', unsafe_allow_html=True)
         st.markdown("")
+
+    # ── 재무 자연어 해석 (규칙 기반) ──────────────────────────────────────
+    _nar = fundamental_agent.narrative(fund)
+    if _nar:
+        st.info(f"🧾 **재무 해석** — {_nar}")
 
     # Piotroski F-Score (DART 있을 때)
     f_score = getattr(fund, "f_score", None)
@@ -716,6 +752,7 @@ elif mode == MODE_SCREEN:
         except Exception:
             top_search = []
         ss.screener = {"final": final, "params": (n_liq, n_full), "top_search": top_search}
+        _global_store()["screener"] = ss.screener
         for c in final:
             ss.results[c.code] = (c.news, c.tech, c.fund, c.strat, c.comm)
 
@@ -1130,6 +1167,7 @@ elif mode == MODE_BACKDATA:
                         ),
                     )
                     ss.bd_result = result
+                    _global_store()["bd_result"] = result
                     status.update(
                         label=f"✅ 완료 — {result['n_scanned']}종목 스캔, 상위 {len(result['top'])}종목",
                         state="complete", expanded=False,
@@ -1309,6 +1347,7 @@ elif mode == MODE_FUND:
                     except Exception:
                         result["logged"] = False
                     ss.fund_result = result
+                    _global_store()["fund_result"] = result
                     status.update(
                         label=f"✅ 완료 — {result['metrics']['n_days']}거래일 운용, "
                               f"리밸런싱 {result['metrics']['n_rebalances']}회",
@@ -1458,6 +1497,22 @@ elif mode == MODE_DISCOUNT:
         "가치 대비 싸게 거래되는 종목을 찾습니다 — 저PER·저PBR(고든모형 적정가 대비) 중 "
         "재무가 건강하고(F-Score) 하락이 멈춘 종목만. 근거: Piotroski(2000) 저평가×고품질 조합."
     )
+    with st.expander("📖 할인점수는 뭘 참고해서 계산하나요?"):
+        st.markdown(
+            "**데이터 출처** — 네이버 시총 상위 목록(PER 1차 컷), 네이버 종목 페이지"
+            "(PER·업종PER·PBR·배당·분기ROE), DART 전자공시 사업보고서(F-Score·부채비율·성장률), "
+            "네이버 차트 API(52주 고점·기술점수). LLM 미사용, 전부 규칙 기반.\n\n"
+            "**할인점수 100점의 구성**\n"
+            "- **밸류에이션 50점**: PER 절대 수준 + 업종 PER 대비 할인율(Damodaran 2012) + "
+            "PBR을 고든 성장모형 적정가(ROE÷요구수익률 8%)와 비교 — 'ROE가 높은 회사는 PBR이 "
+            "높아도 싼 것'을 반영\n"
+            "- **품질 30점**: ROE 수준·추이 + Piotroski F-Score(수익성 4·건전성 3·효율 2, 총 9개 "
+            "이진 판정) — **가치함정 방지**: 싸면서 재무가 나빠지는 회사 제거 (Piotroski 2000)\n"
+            "- **안전마진 20점**: 52주 고점 대비 할인폭(10) + 바닥 안정화(10: 기술점수·20일선) — "
+            "**낙하는 칼 방지**: 아직 추락 중인 종목 제외\n\n"
+            "**자동 제외**: 적자(PER≤0) · F-Score ≤3(재무 악화) · 기술점수 <−30(하락 지속). "
+            "제외 내역과 사유는 결과 하단에 표시됩니다."
+        )
 
     _dc_key = f"{dc_per_max}|{dc_scan}|{dc_top}"
     if dc_btn:
@@ -1478,6 +1533,7 @@ elif mode == MODE_DISCOUNT:
                     )
                     result["params_key"] = _dc_key
                     ss.dc_result = result
+                    _global_store()["dc_result"] = result
                     status.update(
                         label=f"✅ 완료 — 저PER 후보 {result['n_cheap']}종목 중 "
                               f"{result['n_scanned']}종목 정밀 분석",
@@ -1527,6 +1583,8 @@ elif mode == MODE_DISCOUNT:
             # ── 종목별 상세 ───────────────────────────────────────────
             for r in dres["rows"]:
                 with st.expander(f"💎 {r['name']} — 할인점수 {r['score']} · {r['close']:,.0f}원"):
+                    if r.get("narrative"):
+                        st.info(f"🧾 {r['narrative']}")
                     st.write(r["summary"])
                     st.caption(f"안전마진: {r['margin_reason']} · 데이터: {r['data_quality']}")
                     if r["f_details"]:

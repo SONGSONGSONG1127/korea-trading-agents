@@ -486,3 +486,76 @@ def run(code: str, stock_name: str = "") -> FundamentalReport:
         + ", ".join(parts) + "."
     )
     return report
+
+
+# ── 재무 자연어 해석 (규칙 기반, LLM 미사용) ─────────────────────────────
+
+def narrative(r: FundamentalReport) -> str:
+    """재무제표 숫자를 사람 말로 풀어낸 2~5문장 해석."""
+    s: list[str] = []
+
+    # ① 벌이의 구조: 매출 성장 × 영업이익률 조합
+    rg, om, og = r.revenue_growth, r.op_margin, r.op_profit_growth
+    if rg is not None and om is not None:
+        if rg >= 10 and om >= 15:
+            s.append(f"매출도 잘 늘고(+{rg:.0f}%) 남기는 힘도 좋습니다(영업이익률 {om:.0f}%) — 성장과 수익성을 다 갖춘 형태.")
+        elif rg >= 10 and om < 5:
+            s.append(f"덩치는 빠르게 커지는데(매출 +{rg:.0f}%) 남는 건 얇습니다(영업이익률 {om:.1f}%) — 박리다매형이라 원가·단가 변동에 이익이 크게 흔들릴 수 있어요.")
+        elif rg < 0 and om >= 15:
+            s.append(f"매출은 줄고 있지만({rg:.0f}%) 수익성은 탄탄합니다(영업이익률 {om:.0f}%) — 시장이 줄어도 내실은 지키는 형태.")
+        elif rg < 0 and om < 5:
+            s.append(f"매출도 줄고({rg:.0f}%) 마진도 얇습니다(영업이익률 {om:.1f}%) — 업황 반등 없이는 이익 개선이 어려운 구조.")
+        else:
+            s.append(f"매출 {rg:+.0f}%, 영업이익률 {om:.0f}%로 무난한 벌이 구조입니다.")
+    if og is not None and rg is not None:
+        if og >= rg + 15 and og > 0:
+            s.append(f"이익(+{og:.0f}%)이 매출보다 훨씬 빨리 늘고 있어요 — 비용 통제나 단가 인상이 먹히는 중.")
+        elif og < 0 < rg:
+            s.append(f"매출은 느는데 영업이익은 줄었습니다({og:.0f}%) — 팔수록 비용 압박이 커지는 신호라 주의.")
+
+    # ② 자본 효율: ROE·ROA·부채의 관계
+    roe, roa, dr = r.roe, r.roa, r.debt_ratio
+    if roe is not None:
+        if roe >= 15:
+            base = f"주주 자본을 잘 굴립니다(ROE {roe:.0f}%)"
+            if roa is not None and dr is not None and dr > 150 and roa < roe / 3:
+                base += f" — 다만 상당 부분 빚(부채비율 {dr:.0f}%)으로 만든 수익률이라 금리에 민감해요"
+            s.append(base + ".")
+        elif roe < 5:
+            s.append(f"자본 효율이 낮습니다(ROE {roe:.1f}%) — 돈이 회사 안에서 잘 안 굴러가는 상태.")
+    if dr is not None:
+        if dr < 50:
+            s.append(f"빚이 거의 없어(부채비율 {dr:.0f}%) 웬만한 불황은 버틸 체력입니다.")
+        elif dr > 200:
+            s.append(f"부채비율 {dr:.0f}%로 빚 부담이 큽니다 — 금리·업황 악화에 취약.")
+
+    # ③ 재무 궤적: F-Score
+    if r.f_score is not None:
+        if r.f_score >= 7:
+            s.append(f"재무 흐름 자체도 개선 중입니다(F-Score {r.f_score}/9) — 회계적으로 좋아지는 방향.")
+        elif r.f_score <= 3:
+            s.append(f"재무 흐름이 악화 중입니다(F-Score {r.f_score}/9) — 싸 보여도 이유가 있는 가격일 수 있어요.")
+
+    # ④ 가격 평가: 업종 상대 PER + 고든모형 적정 PBR
+    price_bits = []
+    if r.per and r.per > 0 and r.sector_per and r.sector_per > 0:
+        rel = (r.sector_per - r.per) / r.sector_per * 100
+        if rel >= 20:
+            price_bits.append(f"이익 대비 업종보다 {rel:.0f}% 싸게")
+        elif rel <= -20:
+            price_bits.append(f"이익 대비 업종보다 {-rel:.0f}% 비싸게")
+    if r.pbr and r.pbr > 0 and roe and roe > 0:
+        fair = roe / 8.0
+        disc = (fair - r.pbr) / fair * 100
+        if disc >= 25:
+            price_bits.append(f"수익력 대비 자산가치로도 {disc:.0f}% 할인되어")
+        elif disc <= -25:
+            price_bits.append("자산가치 대비로는 프리미엄이 붙어")
+    if price_bits:
+        s.append("지금 가격은 " + ", ".join(price_bits) + " 거래되고 있습니다.")
+
+    # ⑤ 배당
+    if r.div_yield is not None and r.div_yield >= 3:
+        s.append(f"기다리는 동안 배당 {r.div_yield:.1f}%를 받는 것도 안전판이 됩니다.")
+
+    return " ".join(s)

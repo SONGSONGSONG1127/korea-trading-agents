@@ -188,6 +188,7 @@ def run(
                 "tech":          tech,
                 "margin_reason": margin_reason,
                 "summary":       rep.summary,
+                "narrative":     fundamental_agent.narrative(rep),
                 "data_quality":  rep.data_quality,
                 "close":         float(df["close"].iloc[-1]),
             })
