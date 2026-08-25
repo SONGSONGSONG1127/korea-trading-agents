@@ -13,8 +13,8 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from agents import (backdata_agent, community, fund_agent, fundamental_agent, news_agent,
-                    portfolio_agent, scoring, screener, strategy_agent, technical_agent)
+from agents import (backdata_agent, community, discount_agent, fund_agent, fundamental_agent,
+                    news_agent, portfolio_agent, scoring, screener, strategy_agent, technical_agent)
 
 st.set_page_config(
     page_title="K-TradingAgents | 한국 주식 멀티 에이전트 분석",
@@ -62,6 +62,7 @@ MODE_SCREEN    = "🏆 오늘의 후보 종목"
 MODE_PORTFOLIO = "💼 포트폴리오"
 MODE_BACKDATA  = "📅 백데이터 검증"
 MODE_FUND      = "🏦 펀드 시뮬레이션"
+MODE_DISCOUNT  = "💎 할인찬스"
 
 ss = st.session_state
 ss.setdefault("results", {})
@@ -73,6 +74,7 @@ ss.setdefault("pf_quick_add", None) # 포트폴리오 빠른 추가 대상 코�
 ss.setdefault("bd_result", None)    # 백데이터 검증 결과 캐시
 ss.setdefault("fund_result", None)  # 펀드 시뮬레이션 결과 캐시
 ss.setdefault("fund_logs", None)    # 펀드 로그 조회 캐시
+ss.setdefault("dc_result", None)    # 할인찬스 결과 캐시
 if "code_input" not in ss:
     ss.code_input = "005930"
 if "mode" not in ss:
@@ -90,7 +92,7 @@ with st.sidebar:
     st.title("📈 K-TradingAgents")
     st.caption("멀티 에이전트 한국 주식 분석 v4")
 
-    mode = st.radio("모드", [MODE_DETAIL, MODE_SCREEN, MODE_PORTFOLIO, MODE_BACKDATA, MODE_FUND], key="mode")
+    mode = st.radio("모드", [MODE_DETAIL, MODE_SCREEN, MODE_PORTFOLIO, MODE_BACKDATA, MODE_FUND, MODE_DISCOUNT], key="mode")
     st.divider()
 
     if mode == MODE_DETAIL:
@@ -154,7 +156,7 @@ with st.sidebar:
             "1년 수익률은 최소 1년 이전 날짜 선택 시 표시됩니다. "
             "⚠️ 생존 편향: 현재 상장 종목 기준."
         )
-    else:  # MODE_FUND
+    elif mode == MODE_FUND:
         from datetime import date, timedelta
         scan_btn = False
         run_btn  = False
@@ -215,6 +217,20 @@ with st.sidebar:
         st.caption(
             "거래비용 편도 0.3% 반영 (수수료+세금+슬리피지) · 기준가 1,000원 시작 · "
             "⚠️ 생존 편향: 현재 상장 종목 기준."
+        )
+    else:  # MODE_DISCOUNT
+        scan_btn = False
+        run_btn  = False
+        st.markdown("**할인 탐색 설정**")
+        dc_per_max = st.slider("1차 저PER 컷 (배)", 8, 25, 15, 1, key="dc_per_max",
+                               help="시총 상위 목록의 PER이 이 값 이하(흑자)인 종목만 정밀 분석 후보로.")
+        dc_scan = st.slider("정밀 분석 종목 수", 20, 60, 40, 5, key="dc_scan",
+                            help="후보 중 PER 낮은 순으로 이 수만큼 재무·차트 정밀 분석. 종목당 요청 ~4번이라 느립니다.")
+        dc_top = st.slider("최종 표시 수", 10, 30, 20, 5, key="dc_top")
+        dc_btn = st.button("💎 할인찬스 탐색", type="primary", use_container_width=True)
+        st.caption(
+            "저PER × 재무건전성(F-Score) × 안전마진(52주 할인+바닥 안정화) 조합. "
+            "근거: Piotroski(2000), Fama-French(1992). 소요 1~2분."
         )
 
 
@@ -1435,5 +1451,95 @@ elif mode == MODE_FUND:
             )
         elif logs is not None:
             st.caption("저장된 로그가 없습니다. 시뮬레이션을 실행하면 자동으로 기록됩니다.")
+
+elif mode == MODE_DISCOUNT:
+    st.title("💎 할인찬스 파인더")
+    st.caption(
+        "가치 대비 싸게 거래되는 종목을 찾습니다 — 저PER·저PBR(고든모형 적정가 대비) 중 "
+        "재무가 건강하고(F-Score) 하락이 멈춘 종목만. 근거: Piotroski(2000) 저평가×고품질 조합."
+    )
+
+    _dc_key = f"{dc_per_max}|{dc_scan}|{dc_top}"
+    if dc_btn:
+        ss.dc_result = None
+
+    if dc_btn or (ss.dc_result and ss.dc_result.get("params_key") == _dc_key):
+        if not ss.dc_result or ss.dc_result.get("params_key") != _dc_key:
+            with st.status("💎 할인찬스 탐색 중...", expanded=True) as status:
+                bar = st.progress(0.0, text="시총 상위 목록 수집 중...")
+                try:
+                    result = discount_agent.run(
+                        per_max=float(dc_per_max),
+                        n_scan=dc_scan,
+                        n_top=dc_top,
+                        progress=lambda i, t, name: bar.progress(
+                            i / t, text=f"정밀 분석 {i}/{t} — {name}"
+                        ),
+                    )
+                    result["params_key"] = _dc_key
+                    ss.dc_result = result
+                    status.update(
+                        label=f"✅ 완료 — 저PER 후보 {result['n_cheap']}종목 중 "
+                              f"{result['n_scanned']}종목 정밀 분석",
+                        state="complete", expanded=False,
+                    )
+                except Exception as e:
+                    st.error(f"탐색 오류: {e}")
+                    ss.dc_result = None
+
+    dres = ss.dc_result
+    if dres and dres.get("params_key") == _dc_key:
+        st.markdown(
+            f"**{dres['run_date']} 기준** · 풀 {dres['n_pool']}종목 → "
+            f"PER ≤ {dres['per_max']:.0f} 흑자 {dres['n_cheap']}종목 → "
+            f"정밀 분석 {dres['n_scanned']}종목 → 통과 {len(dres['rows'])}종목 "
+            f"(제외 {len(dres['excluded'])}종목)"
+        )
+
+        if not dres["rows"]:
+            st.warning("조건을 통과한 종목이 없습니다. 1차 PER 컷을 높여보세요.")
+        else:
+            tbl = []
+            for r in dres["rows"]:
+                per_txt = f"{r['per']:.1f}" if r["per"] else "—"
+                if r["per"] and r["sector_per"]:
+                    rel = (r["sector_per"] - r["per"]) / r["sector_per"] * 100
+                    per_txt += f" ({rel:+.0f}%)"
+                tbl.append({
+                    "종목":      f"{r['name']}({r['code']})",
+                    "할인점수":   r["score"],
+                    "밸류":      f"{r['val_score']}/50",
+                    "품질":      f"{r['qual_score']}/30",
+                    "안전마진":   f"{r['margin_score']}/20",
+                    "PER(업종比)": per_txt,
+                    "PBR":       f"{r['pbr']:.2f}" if r["pbr"] else "—",
+                    "ROE":       f"{r['roe']:.1f}%" if r["roe"] else "—",
+                    "배당":      f"{r['div_yield']:.1f}%" if r["div_yield"] else "—",
+                    "52주고점比": f"{r['discount52']:+.0%}",
+                    "F-Score":   f"{r['f_score']}/9" if r["f_score"] is not None else "—",
+                })
+            st.dataframe(pd.DataFrame(tbl), hide_index=True, use_container_width=True)
+            st.caption(
+                "할인점수 = 밸류에이션(50) + 품질(30) + 안전마진(20) · "
+                "PER 옆 괄호 = 업종 대비 할인율 · F-Score — 는 DART 미확보"
+            )
+
+            # ── 종목별 상세 ───────────────────────────────────────────
+            for r in dres["rows"]:
+                with st.expander(f"💎 {r['name']} — 할인점수 {r['score']} · {r['close']:,.0f}원"):
+                    st.write(r["summary"])
+                    st.caption(f"안전마진: {r['margin_reason']} · 데이터: {r['data_quality']}")
+                    if r["f_details"]:
+                        for line in r["f_details"]:
+                            st.caption(line)
+                    st.button("🔍 종목 분석으로 이동", key=f"dc_go_{r['code']}",
+                              on_click=goto_detail, args=(r["code"],))
+
+        if dres["excluded"]:
+            with st.expander(f"🚫 제외된 종목 ({len(dres['excluded'])}건) — 싸 보여도 거른 이유"):
+                for e in dres["excluded"]:
+                    st.caption(f"- **{e['name']}**({e['code']}): {e['reason']}")
+    else:
+        st.info("왼쪽 사이드바에서 조건을 정하고 **할인찬스 탐색** 버튼을 눌러주세요.")
 
 render_disclaimer()
