@@ -106,9 +106,19 @@ _store["results"] = ss.results       # dict는 참조 공유 → 이후 분석 �
 
 
 def goto_detail(code: str) -> None:
+    ss["nav_from"] = ss.get("mode")   # 돌아가기용: 출발한 모드 기억
+    ss["_nav_jump"] = True
     ss["mode"] = MODE_DETAIL
     ss["code_input"] = code
     ss["pending"] = code
+
+
+def nav_go_back() -> None:
+    """점프해 온 모드로 복귀."""
+    target = ss.pop("nav_from", None)
+    if target:
+        ss["_nav_jump"] = True
+        ss["mode"] = target
 
 
 # ── 사이드바 ────────────────────────────────────────────────────────────
@@ -117,6 +127,12 @@ with st.sidebar:
     st.caption("멀티 에이전트 한국 주식 분석 v4")
 
     mode = st.radio("모드", [MODE_DETAIL, MODE_SCREEN, MODE_PORTFOLIO, MODE_BACKDATA, MODE_FUND, MODE_DISCOUNT], key="mode")
+    # 수동 모드 전환 시 '돌아가기' 목적지 무효화 (버튼 점프 직후 rerun은 예외)
+    if ss.pop("_nav_jump", False):
+        pass
+    elif mode != ss.get("_last_mode") and ss.get("nav_from"):
+        ss["nav_from"] = None
+    ss["_last_mode"] = mode
     st.divider()
 
     if mode == MODE_DETAIL:
@@ -695,6 +711,8 @@ def render_disclaimer():
 
 # ── 모드: 종목 분석 ─────────────────────────────────────────────────────
 if mode == MODE_DETAIL:
+    if ss.get("nav_from"):
+        st.button(f"← {ss['nav_from']} 결과로 돌아가기", on_click=nav_go_back)
     st.title("한국 주식 멀티 에이전트 분석")
     st.caption("Agent 1 (뉴스/공시) → Agent 2 (기술 4축) → Agent 3 (펀더멘탈) → Agent 4 (전략 종합)")
 
@@ -1151,33 +1169,30 @@ elif mode == MODE_BACKDATA:
 
     if bd_btn:
         ss.bd_result = None   # 캐시 초기화 후 재실행
-
-    if bd_btn or (ss.bd_result and ss.bd_result.get("target_date") == str(bd_date)):
-        if not ss.bd_result or ss.bd_result.get("target_date") != str(bd_date):
-            with st.status(f"📅 {bd_date} 기준 백데이터 시뮬레이션...", expanded=True) as status:
-                bar = st.progress(0.0, text="종목 스캔 준비 중...")
-                try:
-                    result = backdata_agent.run(
-                        target_date_str=str(bd_date),
-                        n_universe=bd_universe,
-                        n_top=bd_top,
-                        include_dart=bd_dart,
-                        progress=lambda i, t, name: bar.progress(
-                            i / t, text=f"{i}/{t} — {name}"
-                        ),
-                    )
-                    ss.bd_result = result
-                    _global_store()["bd_result"] = result
-                    status.update(
-                        label=f"✅ 완료 — {result['n_scanned']}종목 스캔, 상위 {len(result['top'])}종목",
-                        state="complete", expanded=False,
-                    )
-                except Exception as e:
-                    st.error(f"시뮬레이션 오류: {e}")
-                    ss.bd_result = None
+        with st.status(f"📅 {bd_date} 기준 백데이터 시뮬레이션...", expanded=True) as status:
+            bar = st.progress(0.0, text="종목 스캔 준비 중...")
+            try:
+                result = backdata_agent.run(
+                    target_date_str=str(bd_date),
+                    n_universe=bd_universe,
+                    n_top=bd_top,
+                    include_dart=bd_dart,
+                    progress=lambda i, t, name: bar.progress(
+                        i / t, text=f"{i}/{t} — {name}"
+                    ),
+                )
+                ss.bd_result = result
+                _global_store()["bd_result"] = result
+                status.update(
+                    label=f"✅ 완료 — {result['n_scanned']}종목 스캔, 상위 {len(result['top'])}종목",
+                    state="complete", expanded=False,
+                )
+            except Exception as e:
+                st.error(f"시뮬레이션 오류: {e}")
+                ss.bd_result = None
 
     res = ss.bd_result
-    if res and res.get("target_date") == str(bd_date):
+    if res:
         st.markdown(
             f"**{res['target_date']} 기준** · "
             f"탐색 {res['n_scanned']}종목 중 기술점수 상위 {len(res['top'])}종목"
@@ -1213,7 +1228,7 @@ elif mode == MODE_BACKDATA:
             _l, _avgs, _bms = zip(*valid_sum)
             bar_colors = ["#2e7d32" if v >= 0 else "#d32f2f" for v in _avgs]
             fig_bd = go.Figure()
-            fig_bd.add_bar(name=f"신호 상위{bd_top}종목 평균", x=list(_l), y=list(_avgs),
+            fig_bd.add_bar(name=f"신호 상위{len(res['top'])}종목 평균", x=list(_l), y=list(_avgs),
                            marker_color=bar_colors, opacity=0.85)
             fig_bd.add_bar(name="전체 종목 평균(벤치마크)", x=list(_l), y=list(_bms),
                            marker_color="rgba(128,128,128,0.4)")
@@ -1317,50 +1332,46 @@ elif mode == MODE_FUND:
 
     _weight_key = {v: k for k, v in fund_agent.WEIGHT_LABELS.items()}[fd_weight]
     _rebal_days = fund_agent.REBALANCE_OPTIONS[fd_rebal]
-    _params_key = f"{fd_start}|{fd_universe}|{fd_top}|{_rebal_days}|{_weight_key}|{fd_voltgt}|{fd_stop}"
 
     if fd_btn:
         ss.fund_result = None
-
-    if fd_btn or (ss.fund_result and ss.fund_result.get("params_key") == _params_key):
-        if not ss.fund_result or ss.fund_result.get("params_key") != _params_key:
-            with st.status(f"🏦 {fd_start} 설정 펀드 시뮬레이션...", expanded=True) as status:
-                bar = st.progress(0.0, text="유니버스 데이터 로드 준비 중...")
+        with st.status(f"🏦 {fd_start} 설정 펀드 시뮬레이션...", expanded=True) as status:
+            bar = st.progress(0.0, text="유니버스 데이터 로드 준비 중...")
+            try:
+                result = fund_agent.run(
+                    start_date_str=str(fd_start),
+                    n_universe=fd_universe,
+                    n_top=fd_top,
+                    rebalance_days=_rebal_days,
+                    weighting=_weight_key,
+                    vol_target=0.15 if fd_voltgt else None,
+                    stop_atr=2.5 if fd_stop else None,
+                    progress=lambda i, t, name: bar.progress(
+                        i / t, text=f"데이터 로드 {i}/{t} — {name}"
+                    ),
+                )
                 try:
-                    result = fund_agent.run(
-                        start_date_str=str(fd_start),
-                        n_universe=fd_universe,
-                        n_top=fd_top,
-                        rebalance_days=_rebal_days,
-                        weighting=_weight_key,
-                        vol_target=0.15 if fd_voltgt else None,
-                        stop_atr=2.5 if fd_stop else None,
-                        progress=lambda i, t, name: bar.progress(
-                            i / t, text=f"데이터 로드 {i}/{t} — {name}"
-                        ),
-                    )
-                    result["params_key"] = _params_key
-                    try:
-                        fund_agent.save_log(result)
-                        result["logged"] = True
-                        ss.fund_logs = None   # 다음 조회 시 새로 로드
-                    except Exception:
-                        result["logged"] = False
-                    ss.fund_result = result
-                    _global_store()["fund_result"] = result
-                    status.update(
-                        label=f"✅ 완료 — {result['metrics']['n_days']}거래일 운용, "
-                              f"리밸런싱 {result['metrics']['n_rebalances']}회",
-                        state="complete", expanded=False,
-                    )
-                except Exception as e:
-                    st.error(f"시뮬레이션 오류: {e}")
-                    ss.fund_result = None
+                    fund_agent.save_log(result)
+                    result["logged"] = True
+                    ss.fund_logs = None   # 다음 조회 시 새로 로드
+                except Exception:
+                    result["logged"] = False
+                ss.fund_result = result
+                _global_store()["fund_result"] = result
+                status.update(
+                    label=f"✅ 완료 — {result['metrics']['n_days']}거래일 운용, "
+                          f"리밸런싱 {result['metrics']['n_rebalances']}회",
+                    state="complete", expanded=False,
+                )
+            except Exception as e:
+                st.error(f"시뮬레이션 오류: {e}")
+                ss.fund_result = None
 
     fres = ss.fund_result
-    if fres and fres.get("params_key") == _params_key:
+    if fres:
         m = fres["metrics"]
         daily = fres["daily"]
+        _p = fres["params"]
 
         # ── 성과 카드 ─────────────────────────────────────────────────
         c1, c2, c3, c4 = st.columns(4)
@@ -1373,6 +1384,12 @@ elif mode == MODE_FUND:
             f"{fres['start_date']} ~ {fres['end_date']} · {m['n_days']}거래일 · "
             f"{_cagr} · 리밸런싱 {m['n_rebalances']}회 · 평균 회전율 {m['avg_turnover']:.0%} · "
             f"후보 풀 {fres['n_scanned']}종목 (리밸런싱마다 유니버스 재탐색)"
+        )
+        st.caption(
+            f"실행 조건: {_p['n_top']}종목 · {_p['rebalance_days']}거래일 주기 · "
+            f"{fund_agent.WEIGHT_LABELS.get(_p['weighting'], _p['weighting'])} · "
+            f"변동성타겟 {'ON' if _p.get('vol_target') else 'OFF'} · "
+            f"손절 {'ON' if _p.get('stop_atr') else 'OFF'}"
         )
         if fres.get("logged") is True:
             st.caption("📝 이 실행 결과가 Google Sheets `_펀드시뮬로그` 탭에 저장되었습니다.")
@@ -1514,37 +1531,32 @@ elif mode == MODE_DISCOUNT:
             "제외 내역과 사유는 결과 하단에 표시됩니다."
         )
 
-    _dc_key = f"{dc_per_max}|{dc_scan}|{dc_top}"
     if dc_btn:
         ss.dc_result = None
-
-    if dc_btn or (ss.dc_result and ss.dc_result.get("params_key") == _dc_key):
-        if not ss.dc_result or ss.dc_result.get("params_key") != _dc_key:
-            with st.status("💎 할인찬스 탐색 중...", expanded=True) as status:
-                bar = st.progress(0.0, text="시총 상위 목록 수집 중...")
-                try:
-                    result = discount_agent.run(
-                        per_max=float(dc_per_max),
-                        n_scan=dc_scan,
-                        n_top=dc_top,
-                        progress=lambda i, t, name: bar.progress(
-                            i / t, text=f"정밀 분석 {i}/{t} — {name}"
-                        ),
-                    )
-                    result["params_key"] = _dc_key
-                    ss.dc_result = result
-                    _global_store()["dc_result"] = result
-                    status.update(
-                        label=f"✅ 완료 — 저PER 후보 {result['n_cheap']}종목 중 "
-                              f"{result['n_scanned']}종목 정밀 분석",
-                        state="complete", expanded=False,
-                    )
-                except Exception as e:
-                    st.error(f"탐색 오류: {e}")
-                    ss.dc_result = None
+        with st.status("💎 할인찬스 탐색 중...", expanded=True) as status:
+            bar = st.progress(0.0, text="시총 상위 목록 수집 중...")
+            try:
+                result = discount_agent.run(
+                    per_max=float(dc_per_max),
+                    n_scan=int(dc_scan),
+                    n_top=int(dc_top),
+                    progress=lambda i, t, name: bar.progress(
+                        i / t, text=f"정밀 분석 {i}/{t} — {name}"
+                    ),
+                )
+                ss.dc_result = result
+                _global_store()["dc_result"] = result
+                status.update(
+                    label=f"✅ 완료 — 저PER 후보 {result['n_cheap']}종목 중 "
+                          f"{result['n_scanned']}종목 정밀 분석",
+                    state="complete", expanded=False,
+                )
+            except Exception as e:
+                st.error(f"탐색 오류: {e}")
+                ss.dc_result = None
 
     dres = ss.dc_result
-    if dres and dres.get("params_key") == _dc_key:
+    if dres:
         st.markdown(
             f"**{dres['run_date']} 기준** · 풀 {dres['n_pool']}종목 → "
             f"PER ≤ {dres['per_max']:.0f} 흑자 {dres['n_cheap']}종목 → "
