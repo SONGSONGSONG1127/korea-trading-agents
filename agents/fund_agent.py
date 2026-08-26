@@ -63,7 +63,7 @@ LOG_HEADER = [
     "실행일시", "설정일", "종료일", "운용일수",
     "유니버스", "편입종목", "리밸주기(일)", "비중방식", "변동성타겟", "손절",
     "누적수익률(%)", "KOSPI(%)", "초과수익(%)", "MDD(%)", "샤프",
-    "평균회전율(%)", "리밸런싱횟수", "손절횟수", "최종보유",
+    "평균회전율(%)", "리밸런싱횟수", "손절횟수", "최종보유", "시장",
 ]
 
 
@@ -111,6 +111,7 @@ def save_log(result: dict) -> None:
         m["n_rebalances"],
         m.get("n_stops", 0),
         last_names,
+        p.get("market", "KR"),
     ]
     _log_ws().append_row(row)
 
@@ -157,6 +158,7 @@ def run(
     vol_target: float | None = None,
     stop_atr: float | None = None,
     cost_rate: float = 0.003,
+    market: str = "KR",
     progress: ProgressCb = None,
 ) -> dict:
     """
@@ -169,33 +171,48 @@ def run(
     stop_atr       : 손절 서킷브레이커 배수 (예: 2.5 → 편입가 − 2.5×ATR 하회 시
                      즉시 현금화, 다음 리밸런싱까지 대기). None이면 손절 없음
     cost_rate      : 편도 거래비용 (수수료+세금+슬리피지)
+    market         : "KR"(네이버·KOSPI 벤치마크) | "US"(yfinance·S&P500 벤치마크)
+                     ※ 결과의 kospi 키는 시장 무관하게 '벤치마크 지수'를 뜻한다
     """
     start_ts = pd.Timestamp(start_date_str)
 
     # ── 1. 후보 풀 가격 데이터 로드 (유일하게 느린 구간) ──────────────────
     # 유니버스는 리밸런싱 시점마다 다시 구성하므로, 넉넉한 풀(유니버스 2배)을 로드해 둔다.
-    pool_n = min(500, max(n_universe * 2, n_universe + 50))
-    leaders = _market_leaders(kospi_pages=6, kosdaq_pages=4)[:pool_n]
     stocks: dict[str, dict] = {}   # code -> {close(al), score(al), ret(al), value(al), min_date}
     names: dict[str, str] = {}
-
-    kospi_df = _fetch_kospi()
-
     raw: dict[str, pd.DataFrame] = {}
-    for i, cand in enumerate(leaders, 1):
-        if progress:
-            progress(i, len(leaders), f"{cand.name}({cand.code})")
+
+    if market == "US":
+        from . import us_data
+        univ = us_data.sp500_universe()
+        names_all = {u["code"]: u["name"] for u in univ}
+        fetched = us_data.fetch_many(list(names_all), days=_FETCH_DAYS, progress=progress)
+        for code, df in fetched.items():
+            if len(df) >= _MIN_HISTORY:
+                raw[code] = df
+                names[code] = names_all[code]
         try:
-            df = technical_agent.fetch_daily_prices_fast(cand.code, days=_FETCH_DAYS)
-            df = df.copy()
-            df["date"] = pd.to_datetime(df["date"])
-            if len(df) < _MIN_HISTORY:
-                continue
-            raw[cand.code] = df
-            names[cand.code] = cand.name
+            kospi_df = us_data.fetch_benchmark(days=_FETCH_DAYS)  # ^GSPC (변수명은 벤치마크 의미)
         except Exception:
-            continue
-        time.sleep(0.05)
+            kospi_df = None
+    else:
+        pool_n = min(500, max(n_universe * 2, n_universe + 50))
+        leaders = _market_leaders(kospi_pages=6, kosdaq_pages=4)[:pool_n]
+        kospi_df = _fetch_kospi()
+        for i, cand in enumerate(leaders, 1):
+            if progress:
+                progress(i, len(leaders), f"{cand.name}({cand.code})")
+            try:
+                df = technical_agent.fetch_daily_prices_fast(cand.code, days=_FETCH_DAYS)
+                df = df.copy()
+                df["date"] = pd.to_datetime(df["date"])
+                if len(df) < _MIN_HISTORY:
+                    continue
+                raw[cand.code] = df
+                names[cand.code] = cand.name
+            except Exception:
+                continue
+            time.sleep(0.05)
 
     if not raw:
         raise ValueError("가격 데이터를 가져올 수 있는 종목이 없습니다. 잠시 후 다시 시도해 주세요.")
@@ -416,6 +433,7 @@ def run(
         "start_date":      start_date_str,
         "end_date":        daily[-1]["date"] if daily else None,
         "params": {
+            "market":         market,
             "n_universe":     n_universe,
             "n_top":          n_top,
             "rebalance_days": rebalance_days,

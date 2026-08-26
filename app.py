@@ -14,7 +14,8 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from agents import (backdata_agent, community, discount_agent, fund_agent, fundamental_agent,
-                    news_agent, portfolio_agent, scoring, screener, strategy_agent, technical_agent)
+                    news_agent, portfolio_agent, scoring, screener, strategy_agent,
+                    technical_agent, us_screener)
 
 st.set_page_config(
     page_title="K-TradingAgents | 한국 주식 멀티 에이전트 분석",
@@ -77,7 +78,8 @@ def _global_store() -> dict:
     return {}
 
 
-_PERSIST_KEYS = ("results", "screener", "bd_result", "fund_result", "dc_result", "last_analyzed")
+_PERSIST_KEYS = ("results", "screener", "bd_result", "fund_result", "dc_result",
+                 "last_analyzed", "us_screener", "market")
 
 ss.setdefault("results", {})
 ss.setdefault("last_analyzed", None)
@@ -89,6 +91,8 @@ ss.setdefault("bd_result", None)    # 백데이터 검증 결과 캐시
 ss.setdefault("fund_result", None)  # 펀드 시뮬레이션 결과 캐시
 ss.setdefault("fund_logs", None)    # 펀드 로그 조회 캐시
 ss.setdefault("dc_result", None)    # 할인찬스 결과 캐시
+ss.setdefault("us_screener", None)  # 미국 스크리너 결과 캐시
+ss.setdefault("market", "KR")       # "KR" | "US"
 if "code_input" not in ss:
     ss.code_input = "005930"
 if "mode" not in ss:
@@ -121,10 +125,25 @@ def nav_go_back() -> None:
         ss["mode"] = target
 
 
+def _set_market(m: str) -> None:
+    ss["market"] = m
+
+
 # ── 사이드바 ────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.title("📈 K-TradingAgents")
-    st.caption("멀티 에이전트 한국 주식 분석 v4")
+    _mk1, _mk2 = st.columns(2)
+    _mk1.button("🇰🇷 K-Trading", use_container_width=True,
+                type="primary" if ss.market == "KR" else "secondary",
+                on_click=_set_market, args=("KR",))
+    _mk2.button("🇺🇸 USA-Trading", use_container_width=True,
+                type="primary" if ss.market == "US" else "secondary",
+                on_click=_set_market, args=("US",))
+    if ss.market == "KR":
+        st.title("📈 K-TradingAgents")
+        st.caption("멀티 에이전트 한국 주식 분석 v4")
+    else:
+        st.title("🇺🇸 USA-TradingAgents")
+        st.caption("멀티 에이전트 미국 주식 분석 (S&P500) v1")
 
     mode = st.radio("모드", [MODE_DETAIL, MODE_SCREEN, MODE_PORTFOLIO, MODE_BACKDATA, MODE_FUND, MODE_DISCOUNT], key="mode")
     # 수동 모드 전환 시 '돌아가기' 목적지 무효화 (버튼 점프 직후 rerun은 예외)
@@ -149,16 +168,23 @@ with st.sidebar:
         )
         scan_btn = False
     elif mode == MODE_SCREEN:
-        n_liq = st.slider("1단계: 거래대금 상위 종목 수", 50, 300, 200, 10,
-                          help="네이버 시총 상위 목록에서 거래대금 순으로 자르는 1차 유동성 필터")
-        n_full = st.slider("2단계: 풀 분석 종목 수", 3, 30, 10,
-                           help="1단계 기술 점수 상위 종목만 뉴스+펀더멘탈 포함 풀 분석")
-        scan_btn = st.button("📡 오늘의 후보 스캔", type="primary", use_container_width=True)
-        st.caption(
-            "1단계는 종목당 요청 1번(차트 API)이라 가볍고, "
-            "뉴스·펀더멘탈 크롤링이 필요한 풀 분석은 상위 종목에만 실행됩니다. LLM 토큰은 쓰지 않습니다."
-        )
         run_btn = False
+        if ss.market == "US":
+            scan_btn = False
+            us_liq = st.slider("거래대금($) 상위 필터 수", 50, 500, 200, 10, key="us_liq")
+            us_top = st.slider("기술점수 상위 표시 수", 10, 50, 20, 5, key="us_top")
+            us_scan_btn = st.button("📡 S&P500 스캔", type="primary", use_container_width=True)
+            st.caption("S&P500 전 종목을 일괄 다운로드(yfinance) 후 기술점수 랭킹. 스크래핑 없음, 약 30~60초.")
+        else:
+            n_liq = st.slider("1단계: 거래대금 상위 종목 수", 50, 300, 200, 10,
+                              help="네이버 시총 상위 목록에서 거래대금 순으로 자르는 1차 유동성 필터")
+            n_full = st.slider("2단계: 풀 분석 종목 수", 3, 30, 10,
+                               help="1단계 기술 점수 상위 종목만 뉴스+펀더멘탈 포함 풀 분석")
+            scan_btn = st.button("📡 오늘의 후보 스캔", type="primary", use_container_width=True)
+            st.caption(
+                "1단계는 종목당 요청 1번(차트 API)이라 가볍고, "
+                "뉴스·펀더멘탈 크롤링이 필요한 풀 분석은 상위 종목에만 실행됩니다. LLM 토큰은 쓰지 않습니다."
+            )
     elif mode == MODE_PORTFOLIO:
         scan_btn = False
         run_btn   = False
@@ -709,8 +735,82 @@ def render_disclaimer():
     )
 
 
+# ── USA 마켓 디스패치 ───────────────────────────────────────────────────
+if ss.market == "US" and mode in (MODE_DETAIL, MODE_PORTFOLIO, MODE_BACKDATA, MODE_DISCOUNT):
+    st.title(f"🇺🇸 {mode}")
+    st.info(
+        "이 모드의 미국 버전은 준비 중입니다. "
+        "현재 USA-Trading은 **🏆 오늘의 후보 종목**(S&P500 스크리너)과 **🏦 펀드 시뮬레이션**을 지원합니다. "
+        "국장 기능은 왼쪽 상단 🇰🇷 K-Trading에서 그대로 사용할 수 있어요."
+    )
+
+elif ss.market == "US" and mode == MODE_SCREEN:
+    st.title("🏆 오늘의 후보 종목 — S&P500")
+    st.caption(
+        "S&P500 전 종목을 yfinance로 일괄 수신 → 거래대금($) 상위 필터 → 기술점수(MA·RSI·MACD·볼린저·거래량) 랭킹. "
+        "점수 엔진은 K-Trading과 동일합니다."
+    )
+
+    if us_scan_btn:
+        ss.us_screener = None
+        with st.status("🇺🇸 S&P500 스캔 중...", expanded=True) as status:
+            bar = st.progress(0.0, text="구성종목 목록 로드 중...")
+            try:
+                result = us_screener.run(
+                    liquidity_top=int(us_liq), n_top=int(us_top),
+                    progress=lambda i, t, name: bar.progress(i / t, text=f"다운로드 {i}/{t} — {name}"),
+                )
+                ss.us_screener = result
+                _global_store()["us_screener"] = result
+                status.update(
+                    label=f"✅ 완료 — {result['n_data']}종목 수신, 거래대금 상위 {result['n_liq']}종목 채점",
+                    state="complete", expanded=False,
+                )
+            except Exception as e:
+                st.error(f"스캔 오류: {e}")
+                ss.us_screener = None
+
+    usr = ss.us_screener
+    if usr:
+        st.markdown(
+            f"**{usr['run_date']} 기준** · S&P500 {usr['n_universe']}종목 중 "
+            f"{usr['n_data']}종목 수신 → 거래대금 상위 {usr['n_liq']}종목 → 기술점수 상위 {len(usr['rows'])}종목"
+        )
+        us_tbl = []
+        for i, r in enumerate(usr["rows"], 1):
+            us_tbl.append({
+                "순위":     i,
+                "티커":     r["code"],
+                "종목":     r["name"],
+                "섹터":     r["sector"],
+                "기술점수":  f"{r['score']:+.2f}",
+                "종가":     f"${r['close']:,.2f}",
+                "거래대금":  f"${r['value'] / 1e9:,.1f}B",
+            })
+        st.dataframe(pd.DataFrame(us_tbl), hide_index=True, use_container_width=True)
+
+        for r in usr["rows"]:
+            with st.expander(f"📊 {r['code']} {r['name']} — 멀티기간 백테스트 ({r['n_days']}거래일)"):
+                bt_rows = []
+                for p in r["periods"]:
+                    if "note" in p:
+                        bt_rows.append({"기간": p["label"], "신호수": p["n_signals"],
+                                        "승률": "—", "평균수익률": "—", "초과수익": "—", "샤프": "—"})
+                    else:
+                        bt_rows.append({
+                            "기간": p["label"], "신호수": p["n_signals"],
+                            "승률": f"{p['win_rate']:.0%}",
+                            "평균수익률": f"{p['avg_return']:+.1%}",
+                            "초과수익": f"{p['excess']:+.1%}" if p.get("excess") is not None else "—",
+                            "샤프": f"{p['sharpe']:.2f}" if p.get("sharpe") is not None else "—",
+                        })
+                st.dataframe(pd.DataFrame(bt_rows), hide_index=True, use_container_width=True)
+        st.caption("백테스트: 기술점수 ≥ 0.30 신호의 보유기간별 성과 (같은 종목 과거 데이터 기준, 참고용)")
+    else:
+        st.info("왼쪽 사이드바에서 **S&P500 스캔** 버튼을 눌러주세요.")
+
 # ── 모드: 종목 분석 ─────────────────────────────────────────────────────
-if mode == MODE_DETAIL:
+elif mode == MODE_DETAIL:
     if ss.get("nav_from"):
         st.button(f"← {ss['nav_from']} 결과로 돌아가기", on_click=nav_go_back)
     st.title("한국 주식 멀티 에이전트 분석")
@@ -1346,6 +1446,7 @@ elif mode == MODE_FUND:
                     weighting=_weight_key,
                     vol_target=0.15 if fd_voltgt else None,
                     stop_atr=2.5 if fd_stop else None,
+                    market=ss.market,
                     progress=lambda i, t, name: bar.progress(
                         i / t, text=f"데이터 로드 {i}/{t} — {name}"
                     ),
@@ -1372,11 +1473,14 @@ elif mode == MODE_FUND:
         m = fres["metrics"]
         daily = fres["daily"]
         _p = fres["params"]
+        _is_us = _p.get("market") == "US"
+        _bm_name = "S&P500" if _is_us else "KOSPI"
+        _pxfmt = (lambda v: f"${v:,.2f}") if _is_us else (lambda v: f"{v:,.0f}")
 
         # ── 성과 카드 ─────────────────────────────────────────────────
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("누적수익률", f"{m['cum_return']:+.1%}")
-        c2.metric("KOSPI 대비 초과", f"{m['excess']:+.1%}" if m["excess"] is not None else "N/A")
+        c2.metric(f"{_bm_name} 대비 초과", f"{m['excess']:+.1%}" if m["excess"] is not None else "N/A")
         c3.metric("최대낙폭 (MDD)", f"{m['mdd']:.1%}")
         c4.metric("샤프", f"{m['sharpe']:.2f}" if m["sharpe"] is not None else "N/A")
         _cagr = f"연환산 {m['cagr']:+.1%}" if m["cagr"] is not None else ""
@@ -1386,7 +1490,8 @@ elif mode == MODE_FUND:
             f"후보 풀 {fres['n_scanned']}종목 (리밸런싱마다 유니버스 재탐색)"
         )
         st.caption(
-            f"실행 조건: {_p['n_top']}종목 · {_p['rebalance_days']}거래일 주기 · "
+            f"실행 조건: {'🇺🇸 S&P500' if _is_us else '🇰🇷 국장'} · "
+            f"{_p['n_top']}종목 · {_p['rebalance_days']}거래일 주기 · "
             f"{fund_agent.WEIGHT_LABELS.get(_p['weighting'], _p['weighting'])} · "
             f"변동성타겟 {'ON' if _p.get('vol_target') else 'OFF'} · "
             f"손절 {'ON' if _p.get('stop_atr') else 'OFF'}"
@@ -1407,7 +1512,7 @@ elif mode == MODE_FUND:
             fig_f.add_scatter(
                 x=dates,
                 y=[d["kospi"] / kospi0 * 1000 if d["kospi"] is not None else None for d in daily],
-                name="KOSPI (1,000 환산)", mode="lines",
+                name=f"{_bm_name} (1,000 환산)", mode="lines",
                 line=dict(color="rgba(128,128,128,0.7)", width=1.5, dash="dot"),
             )
         fig_f.add_hline(y=1000, line_dash="dash", line_color="gray", line_width=1)
@@ -1445,8 +1550,8 @@ elif mode == MODE_FUND:
                     "종목":       f"{h['name']}({h['code']})",
                     "비중(설정)": f"{h['weight']:.0%}",
                     "편입일":     ev["date"],
-                    "편입가":     f"{h['price']:,.0f}",
-                    "조회일 종가": f"{cur:,.0f}" if cur else "—",
+                    "편입가":     _pxfmt(h["price"]),
+                    "조회일 종가": _pxfmt(cur) if cur else "—",
                     "수익률":     f"{(cur / h['price'] - 1):+.1%}" if cur else "—",
                     "편입시 점수": f"{h['score']:+.2f}",
                 })
@@ -1462,8 +1567,8 @@ elif mode == MODE_FUND:
                 stop_rows = [{
                     "날짜":   s["date"],
                     "종목":   f"{s['name']}({s['code']})",
-                    "편입가": f"{s['entry']:,.0f}",
-                    "손절가": f"{s['exit']:,.0f}",
+                    "편입가": _pxfmt(s["entry"]),
+                    "손절가": _pxfmt(s["exit"]),
                     "손실률": f"{s['loss_pct']:+.1%}",
                 } for s in fres["stops"]]
                 st.dataframe(pd.DataFrame(stop_rows), hide_index=True, use_container_width=True)
