@@ -15,7 +15,7 @@ from plotly.subplots import make_subplots
 
 from agents import (backdata_agent, backtest, community, discount_agent, fund_agent,
                     fundamental_agent, news_agent, portfolio_agent, scoring, screener,
-                    strategy_agent, technical_agent, us_data, us_screener)
+                    strategy_agent, technical_agent, us_data, us_fundamental, us_screener)
 
 st.set_page_config(
     page_title="K-TradingAgents | 한국 주식 멀티 에이전트 분석",
@@ -785,16 +785,25 @@ elif ss.market == "US" and mode == MODE_DETAIL:
     if _target:
         _tk = _target.strip().upper()
         if _tk not in ss.us_results or us_run_btn:
-            with st.spinner(f"{_tk} 데이터 수신·분석 중..."):
+            with st.spinner(f"{_tk} 데이터 수신·분석 중... (차트·재무·기술신호)"):
                 try:
                     _df = us_data.fetch_daily_prices(_tk, days=900)
                     _info = us_data.ticker_info(_tk)
+                    _fund = us_fundamental.run(_tk)
+                    _wiki = us_data.wiki_summary_kr(_info["name"])
+                    _regime = us_data.market_regime()
+                    _tech = technical_agent.run(_tk, df=_df.copy(), regime=_regime, unit="달러")
                     _enr = technical_agent.enrich(_df.copy())
                     _sc = backtest.score_series(_enr)
                     _last = _enr.iloc[-1]
+                    _tech.df = None  # 세션 캐시 경량화 (df는 별도 저장)
                     ss.us_results[_tk] = {
                         "df":      _df.tail(400).reset_index(drop=True),
                         "info":    _info,
+                        "fund":    _fund,
+                        "wiki":    _wiki,
+                        "tech":    _tech,
+                        "regime":  _regime,
                         "score":   float(_sc.iloc[-1]) if not pd.isna(_sc.iloc[-1]) else 0.0,
                         "periods": backtest.run_multiperiod(_enr),
                         "ind": {
@@ -870,6 +879,69 @@ elif ss.market == "US" and mode == MODE_DETAIL:
         i6 = f"상대거래량 **{ind['rvol']:.1f}배**"
         i7 = f"ATR **{ind['atr_pct']:.1%}**/일"
         st.markdown(" · ".join([i1, i2, i3, i4, i5, i6, i7]))
+
+        # ── 어떤 기업인가 (한글 요약) ─────────────────────────────────
+        if r.get("wiki"):
+            st.info(f"🏢 **어떤 기업?** — {r['wiki']}")
+        elif info.get("summary"):
+            st.caption("🏢 한글 요약을 찾지 못했습니다. 아래 영문 사업 요약을 참고하세요.")
+
+        # ── 기술 신호 4축 (근거 포함) ─────────────────────────────────
+        _tr = r.get("tech")
+        if _tr and not getattr(_tr, "error", None):
+            _rg = r.get("regime")
+            with st.expander(
+                f"📐 기술 신호 상세 — 4축 {'/'.join(f'{k} {v:+.2f}' for k, v in _tr.cat_scores.items())}"
+                + (f" · 시장 {_rg[0]}" if _rg else "")
+            ):
+                if _rg:
+                    st.caption(f"시장 레짐: **{_rg[0]}** — {_rg[1]}")
+                for _cat in ["추세", "모멘텀", "거래량", "위치/변동성"]:
+                    _sigs = [s for s in _tr.signals if s.category == _cat]
+                    if not _sigs:
+                        continue
+                    st.markdown(f"**{_cat}** ({_tr.cat_scores.get(_cat, 0):+.2f})")
+                    for s in _sigs:
+                        _ic = "🔴" if s.score > 0 else ("🔵" if s.score < 0 else "⚪")
+                        st.caption(f"{_ic} {s.name} ({s.score:+.2f}) — {s.evidence}")
+                for _fl in getattr(_tr, "flags", []):
+                    st.warning(_fl)
+
+        # ── 펀더멘탈 (미장식: 섹터 상대 · FCF · 주주환원) ─────────────
+        _f = r.get("fund")
+        if _f:
+            st.markdown(f"#### 📋 펀더멘탈 — **{_f['score']}점 / {_f['grade']}**")
+            st.caption(
+                f"밸류에이션 {_f['val_score']}/35 (섹터 상대 fwd PER·EV/EBITDA·FCF yield·PEG) · "
+                f"품질 {_f['qual_score']}/35 (ROE·마진·부채) · "
+                f"성장·주주환원 {_f['growth_score']}/30"
+            )
+            _chips = []
+            if _f["fwd_pe"]:
+                _rel = (1 - _f["pe_ratio"]) * 100 if _f["pe_ratio"] else None
+                _chips.append(f"fwd PER **{_f['fwd_pe']:.1f}** (섹터 {_f['sector_pe']:.0f} 대비 {_rel:+.0f}%)" if _rel is not None else f"fwd PER **{_f['fwd_pe']:.1f}**")
+            if _f["ev_ebitda"]:
+                _chips.append(f"EV/EBITDA **{_f['ev_ebitda']:.1f}**")
+            if _f["fcf_yield"] is not None:
+                _chips.append(f"FCF수익률 **{_f['fcf_yield']:.1f}%**")
+            if _f["peg"]:
+                _chips.append(f"PEG **{_f['peg']:.2f}**")
+            if _f["roe"] is not None:
+                _chips.append(f"ROE **{_f['roe']:.0f}%**")
+            if _f["gross_m"] is not None:
+                _chips.append(f"매출총이익률 **{_f['gross_m']:.0f}%**")
+            if _f["op_m"] is not None:
+                _chips.append(f"영업마진 **{_f['op_m']:.0f}%**")
+            if _f["de"] is not None:
+                _chips.append(f"D/E **{_f['de']:.0f}%**")
+            if _f["rev_g"] is not None:
+                _chips.append(f"매출성장 **{_f['rev_g']:+.0f}%**")
+            if _f["sh_yield"] is not None:
+                _chips.append(f"주주환원율 **{_f['sh_yield']:.1f}%**")
+            if _chips:
+                st.markdown(" · ".join(_chips))
+            if _f["narrative"]:
+                st.info(f"🧾 **재무 해석** — {_f['narrative']}")
 
         # ── 멀티기간 백테스트 ─────────────────────────────────────────
         st.markdown("#### 멀티기간 백테스트 (기술점수 ≥ 0.30 신호)")

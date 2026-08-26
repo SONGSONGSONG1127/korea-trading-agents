@@ -119,6 +119,48 @@ def sector_kr(sector: str) -> str:
     return SECTOR_KR.get(sector, sector)
 
 
+def wiki_summary_kr(name: str) -> str | None:
+    """한국어 위키피디아에서 회사 요약 2~3문장 (LLM 무사용). 없으면 None."""
+    from urllib.parse import quote
+    try:
+        r = requests.get(
+            "https://ko.wikipedia.org/w/api.php",
+            params={"action": "opensearch", "search": name, "limit": 1, "format": "json"},
+            headers=_HEADERS, timeout=8,
+        )
+        titles = r.json()[1]
+        if not titles:
+            return None
+        s = requests.get(
+            f"https://ko.wikipedia.org/api/rest_v1/page/summary/{quote(titles[0])}",
+            headers=_HEADERS, timeout=8,
+        ).json()
+        extract = s.get("extract") or ""
+        if len(extract) < 30:
+            return None
+        # 3문장까지만
+        parts = extract.split(". ")
+        return (". ".join(parts[:3]) + ("." if not parts[min(2, len(parts) - 1)].endswith(".") else "")).strip()
+    except Exception:
+        return None
+
+
+def market_regime() -> tuple[str, str]:
+    """S&P500(^GSPC) vs 60일선 — 시장 레짐 판정 (technical_agent와 동일 로직)."""
+    try:
+        df = fetch_benchmark(days=200)
+        close = df["close"]
+        ma60 = close.rolling(60).mean().iloc[-1]
+        last = float(close.iloc[-1])
+        if last > ma60 * 1.005:
+            return "순풍", f"S&P500 {last:,.0f} > 60일선 {ma60:,.0f} (시장 상승 국면)"
+        if last < ma60 * 0.995:
+            return "역풍", f"S&P500 {last:,.0f} < 60일선 {ma60:,.0f} (시장 하락 국면)"
+        return "중립", f"S&P500 {last:,.0f} ≈ 60일선 {ma60:,.0f}"
+    except Exception:
+        return "중립", "지수 데이터 수집 실패"
+
+
 def ticker_info(ticker: str) -> dict:
     """회사 기본 정보 (yfinance .info에서 필요한 것만)."""
     import yfinance as yf

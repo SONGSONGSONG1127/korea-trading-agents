@@ -204,7 +204,7 @@ def enrich(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── 신호 생성 (증거 객체) ────────────────────────────────────────────────
 
-def _trend_signals(df: pd.DataFrame, vol_dead: bool) -> list[Signal]:
+def _trend_signals(df: pd.DataFrame, vol_dead: bool, unit: str = "원") -> list[Signal]:
     sig: list[Signal] = []
     last = df.iloc[-1]
     price, ma5, ma20, ma60 = last["close"], last["ma5"], last["ma20"], last["ma60"]
@@ -214,12 +214,12 @@ def _trend_signals(df: pd.DataFrame, vol_dead: bool) -> list[Signal]:
     # 가격 vs MA20 — MA20이 하락 기울기면 감액 (하락 추세 속 일시 반등 오판 방지)
     if price > ma20:
         s = 0.1 if slope < 0 else 0.3
-        ev = f"현재가 {price:,.0f}원이 20일선({ma20:,.0f}원) 위"
+        ev = f"현재가 {price:,.0f}{unit}이 20일선({ma20:,.0f}{unit}) 위"
         ev += " (단, 20일선 자체는 하락 중이라 감액)" if slope < 0 else ""
         sig.append(Signal("가격 vs 20일선", "추세", s, ev))
     else:
         sig.append(Signal("가격 vs 20일선", "추세", -0.3,
-                          f"현재가 {price:,.0f}원이 20일선({ma20:,.0f}원) 아래"))
+                          f"현재가 {price:,.0f}{unit}이 20일선({ma20:,.0f}{unit}) 아래"))
 
     sig.append(Signal("MA5 vs MA20", "추세", 0.15 if ma5 > ma20 else -0.15,
                       f"5일선({ma5:,.0f}) {'>' if ma5 > ma20 else '<'} 20일선({ma20:,.0f})"))
@@ -355,9 +355,13 @@ def _position_signals(df: pd.DataFrame) -> tuple[list[Signal], bool]:
 # ── 메인 ────────────────────────────────────────────────────────────────
 
 def run(code: str, df: pd.DataFrame | None = None,
-        regime: tuple[str, str] | None = None) -> TechnicalReport:
-    """df/regime을 미리 넘기면 재수집 없이 사용한다 (스크리너에서 재활용)."""
-    code = re.sub(r"\D", "", code).zfill(6)
+        regime: tuple[str, str] | None = None, unit: str = "원") -> TechnicalReport:
+    """df/regime을 미리 넘기면 재수집 없이 사용한다 (스크리너에서 재활용).
+
+    unit: 가격 단위 표기 ("원" | "달러") — 미장 재사용 시 근거 문장 단위 교체용.
+    """
+    if unit == "원":
+        code = re.sub(r"\D", "", code).zfill(6)
     report = TechnicalReport(code=code)
     if df is not None:
         df = df.copy()
@@ -404,7 +408,7 @@ def run(code: str, df: pd.DataFrame | None = None,
 
     # 신호 생성 (거래량 → 추세 → 모멘텀 → 위치 순: 게이트/문맥 의존성 때문)
     vol_sigs, vol_dead = _volume_signals(df)
-    trend_sigs = _trend_signals(df, vol_dead)
+    trend_sigs = _trend_signals(df, vol_dead, unit=unit)
     cat = {name: 0.0 for name in CATEGORY_WEIGHTS}
     cat["추세"] = float(np.clip(sum(s.score for s in trend_sigs), -1, 1))
     momentum_sigs = _momentum_signals(df, cat["추세"])
@@ -453,7 +457,7 @@ def run(code: str, df: pd.DataFrame | None = None,
     up = sum(1 for s in cat.values() if s >= 0.2)
     dn = sum(1 for s in cat.values() if s <= -0.2)
     report.summary = (
-        f"현재가 {report.price:,.0f}원, RSI {report.rsi:.1f}, ATR {report.atr:,.0f}원({report.atr_pct:.1%}). "
+        f"현재가 {report.price:,.0f}{unit}, RSI {report.rsi:.1f}, ATR {report.atr:,.0f}{unit}({report.atr_pct:.1%}). "
         f"카테고리 4축 중 {up}축 상방 / {dn}축 하방, 합의 배수 ×{report.confluence_mult:.2f} → "
         f"기술 점수 {report.score:+.2f}."
     )
