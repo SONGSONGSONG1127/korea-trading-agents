@@ -13,9 +13,9 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from agents import (backdata_agent, community, discount_agent, fund_agent, fundamental_agent,
-                    news_agent, portfolio_agent, scoring, screener, strategy_agent,
-                    technical_agent, us_screener)
+from agents import (backdata_agent, backtest, community, discount_agent, fund_agent,
+                    fundamental_agent, news_agent, portfolio_agent, scoring, screener,
+                    strategy_agent, technical_agent, us_data, us_screener)
 
 st.set_page_config(
     page_title="K-TradingAgents | 한국 주식 멀티 에이전트 분석",
@@ -79,7 +79,7 @@ def _global_store() -> dict:
 
 
 _PERSIST_KEYS = ("results", "screener", "bd_result", "fund_result", "dc_result",
-                 "last_analyzed", "us_screener", "market")
+                 "last_analyzed", "us_screener", "market", "us_results", "us_last")
 
 ss.setdefault("results", {})
 ss.setdefault("last_analyzed", None)
@@ -92,6 +92,8 @@ ss.setdefault("fund_result", None)  # 펀드 시뮬레이션 결과 캐시
 ss.setdefault("fund_logs", None)    # 펀드 로그 조회 캐시
 ss.setdefault("dc_result", None)    # 할인찬스 결과 캐시
 ss.setdefault("us_screener", None)  # 미국 스크리너 결과 캐시
+ss.setdefault("us_results", {})     # 미국 종목분석 캐시 {ticker: {...}}
+ss.setdefault("us_last", None)      # 마지막 분석 티커
 ss.setdefault("market", "KR")       # "KR" | "US"
 if "code_input" not in ss:
     ss.code_input = "005930"
@@ -107,6 +109,7 @@ for _k in _PERSIST_KEYS:
     if ss.get(_k):
         _store[_k] = ss[_k]          # 현재 결과를 보관소에 동기화
 _store["results"] = ss.results       # dict는 참조 공유 → 이후 분석 결과 자동 반영
+_store["us_results"] = ss.us_results
 
 
 def goto_detail(code: str) -> None:
@@ -123,6 +126,14 @@ def nav_go_back() -> None:
     if target:
         ss["_nav_jump"] = True
         ss["mode"] = target
+
+
+def goto_us_detail(ticker: str) -> None:
+    ss["nav_from"] = ss.get("mode")
+    ss["_nav_jump"] = True
+    ss["mode"] = MODE_DETAIL
+    ss["us_code_input"] = ticker
+    ss["us_pending"] = ticker
 
 
 def _set_market(m: str) -> None:
@@ -155,18 +166,32 @@ with st.sidebar:
     st.divider()
 
     if mode == MODE_DETAIL:
-        code_in = st.text_input("종목코드 (6자리)", key="code_input",
-                                help="예: 삼성전자 005930, SK하이닉스 000660")
-        run_btn = st.button("🚀 에이전트 분석 실행", type="primary", use_container_width=True)
-        st.markdown(
-            "**자주 찾는 종목**\n\n"
-            "- 삼성전자 `005930`\n"
-            "- SK하이닉스 `000660`\n"
-            "- 현대차 `005380`\n"
-            "- NAVER `035420`\n"
-            "- 카카오 `035720`"
-        )
         scan_btn = False
+        if ss.market == "US":
+            run_btn = False
+            us_code_in = st.text_input("티커", key="us_code_input",
+                                       placeholder="예: AAPL", help="미국 티커 심볼 (예: AAPL, NVDA, MSFT)")
+            us_run_btn = st.button("🚀 분석 실행", type="primary", use_container_width=True)
+            st.markdown(
+                "**자주 찾는 종목**\n\n"
+                "- Apple `AAPL`\n"
+                "- NVIDIA `NVDA`\n"
+                "- Microsoft `MSFT`\n"
+                "- Tesla `TSLA`\n"
+                "- Alphabet `GOOGL`"
+            )
+        else:
+            code_in = st.text_input("종목코드 (6자리)", key="code_input",
+                                    help="예: 삼성전자 005930, SK하이닉스 000660")
+            run_btn = st.button("🚀 에이전트 분석 실행", type="primary", use_container_width=True)
+            st.markdown(
+                "**자주 찾는 종목**\n\n"
+                "- 삼성전자 `005930`\n"
+                "- SK하이닉스 `000660`\n"
+                "- 현대차 `005380`\n"
+                "- NAVER `035420`\n"
+                "- 카카오 `035720`"
+            )
     elif mode == MODE_SCREEN:
         run_btn = False
         if ss.market == "US":
@@ -736,13 +761,138 @@ def render_disclaimer():
 
 
 # ── USA 마켓 디스패치 ───────────────────────────────────────────────────
-if ss.market == "US" and mode in (MODE_DETAIL, MODE_PORTFOLIO, MODE_BACKDATA, MODE_DISCOUNT):
+if ss.market == "US" and mode in (MODE_PORTFOLIO, MODE_BACKDATA, MODE_DISCOUNT):
     st.title(f"🇺🇸 {mode}")
     st.info(
         "이 모드의 미국 버전은 준비 중입니다. "
-        "현재 USA-Trading은 **🏆 오늘의 후보 종목**(S&P500 스크리너)과 **🏦 펀드 시뮬레이션**을 지원합니다. "
+        "현재 USA-Trading은 **🔍 종목 분석 · 🏆 오늘의 후보 종목 · 🏦 펀드 시뮬레이션**을 지원합니다. "
         "국장 기능은 왼쪽 상단 🇰🇷 K-Trading에서 그대로 사용할 수 있어요."
     )
+
+elif ss.market == "US" and mode == MODE_DETAIL:
+    if ss.get("nav_from"):
+        st.button(f"← {ss['nav_from']} 결과로 돌아가기", on_click=nav_go_back)
+    st.title("🇺🇸 미국 종목 분석")
+    st.caption("차트 · 기술 지표 · 멀티기간 백테스트 · 기업 정보 (뉴스·펀더멘탈 점수는 v2)")
+
+    _target = None
+    _p = ss.pop("us_pending", None)
+    if _p:
+        _target = _p
+    elif us_run_btn and us_code_in.strip():
+        _target = us_code_in
+
+    if _target:
+        _tk = _target.strip().upper()
+        if _tk not in ss.us_results or us_run_btn:
+            with st.spinner(f"{_tk} 데이터 수신·분석 중..."):
+                try:
+                    _df = us_data.fetch_daily_prices(_tk, days=900)
+                    _info = us_data.ticker_info(_tk)
+                    _enr = technical_agent.enrich(_df.copy())
+                    _sc = backtest.score_series(_enr)
+                    _last = _enr.iloc[-1]
+                    ss.us_results[_tk] = {
+                        "df":      _df.tail(400).reset_index(drop=True),
+                        "info":    _info,
+                        "score":   float(_sc.iloc[-1]) if not pd.isna(_sc.iloc[-1]) else 0.0,
+                        "periods": backtest.run_multiperiod(_enr),
+                        "ind": {
+                            "rsi":      float(_last["rsi"]),
+                            "ma20_gap": float(_last["close"] / _last["ma20"] - 1),
+                            "ma60_gap": float(_last["close"] / _last["ma60"] - 1) if pd.notna(_last["ma60"]) else None,
+                            "macd_hist": float(_last["macd_hist"]),
+                            "pct_b":    float(_last["pct_b"]),
+                            "rvol":     float(_last["rvol"]),
+                            "atr_pct":  float(_last["atr"] / _last["close"]),
+                        },
+                        "n_days":  len(_df),
+                        "run_date": str(pd.Timestamp.now().date()),
+                    }
+                    ss.us_last = _tk
+                except Exception as e:
+                    st.error(f"{_tk} 분석 실패: {e}")
+        else:
+            ss.us_last = _tk
+
+    _tk = ss.get("us_last")
+    if _tk and _tk in ss.us_results:
+        r = ss.us_results[_tk]
+        info, ind, df_us = r["info"], r["ind"], r["df"]
+        _sec = us_data.sector_kr(info["sector"]) if info["sector"] else "—"
+        st.subheader(f"{info['name']} ({_tk})")
+        st.caption(f"{_sec} · {info['industry'] or '—'} · {r['run_date']} 기준 · {r['n_days']}거래일 데이터")
+
+        _close = float(df_us["close"].iloc[-1])
+        _prev = float(df_us["close"].iloc[-2]) if len(df_us) >= 2 else _close
+        _chg = (_close / _prev - 1) * 100
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("현재가", f"${_close:,.2f}", f"{_chg:+.2f}%")
+        c2.metric("기술점수", f"{r['score'] * 100:+.0f}")
+        c3.metric("시총", f"${info['market_cap'] / 1e9:,.0f}B" if info["market_cap"] else "—")
+        c4.metric("PER", f"{info['per']:.1f}" if info["per"] else "—")
+        if info["hi52"] and info["lo52"] and info["hi52"] > info["lo52"]:
+            _pos = (_close - info["lo52"]) / (info["hi52"] - info["lo52"])
+            c5.metric("52주 위치", f"{_pos:.0%}")
+        else:
+            c5.metric("52주 위치", "—")
+        c6.metric("배당", f"{info['div_yield']:.2f}%" if info["div_yield"] else "—")
+
+        # ── 캔들차트 (최근 180일, MA20/60) ────────────────────────────
+        _dv = df_us.tail(180)
+        fig_us = go.Figure()
+        fig_us.add_candlestick(
+            x=_dv["date"], open=_dv["open"], high=_dv["high"],
+            low=_dv["low"], close=_dv["close"], name=_tk,
+            increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
+        )
+        _ma20 = _dv["close"].rolling(20).mean()
+        _ma60 = df_us["close"].rolling(60).mean().tail(180)
+        fig_us.add_scatter(x=_dv["date"], y=_ma20, name="MA20", mode="lines",
+                           line=dict(color="#f9a825", width=1.2))
+        fig_us.add_scatter(x=_dv["date"], y=_ma60, name="MA60", mode="lines",
+                           line=dict(color="#7e57c2", width=1.2))
+        fig_us.update_layout(
+            height=380, margin=dict(l=0, r=0, t=10, b=0),
+            xaxis_rangeslider_visible=False,
+            legend=dict(orientation="h", y=1.08),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        )
+        fig_us.update_yaxes(gridcolor="rgba(128,128,128,0.15)", tickprefix="$")
+        st.plotly_chart(fig_us, use_container_width=True)
+
+        # ── 기술 지표 요약 ────────────────────────────────────────────
+        i1 = f"RSI **{ind['rsi']:.0f}**" + (" (과열)" if ind["rsi"] >= 70 else (" (과매도)" if ind["rsi"] <= 30 else ""))
+        i2 = f"20일선 대비 **{ind['ma20_gap']:+.1%}**"
+        i3 = f"60일선 대비 **{ind['ma60_gap']:+.1%}**" if ind["ma60_gap"] is not None else "60일선 —"
+        i4 = "MACD 히스토그램 **" + ("+" if ind["macd_hist"] > 0 else "−") + "**"
+        i5 = f"볼린저 %B **{ind['pct_b']:.2f}**"
+        i6 = f"상대거래량 **{ind['rvol']:.1f}배**"
+        i7 = f"ATR **{ind['atr_pct']:.1%}**/일"
+        st.markdown(" · ".join([i1, i2, i3, i4, i5, i6, i7]))
+
+        # ── 멀티기간 백테스트 ─────────────────────────────────────────
+        st.markdown("#### 멀티기간 백테스트 (기술점수 ≥ 0.30 신호)")
+        us_bt = []
+        for p in r["periods"]:
+            if "note" in p:
+                us_bt.append({"기간": p["label"], "신호수": p["n_signals"], "승률": "—",
+                              "평균수익률": "—", "초과수익": "—", "샤프": "—"})
+            else:
+                us_bt.append({
+                    "기간": p["label"], "신호수": p["n_signals"],
+                    "승률": f"{p['win_rate']:.0%}",
+                    "평균수익률": f"{p['avg_return']:+.1%}",
+                    "초과수익": f"{p['excess']:+.1%}" if p.get("excess") is not None else "—",
+                    "샤프": f"{p['sharpe']:.2f}" if p.get("sharpe") is not None else "—",
+                })
+        st.dataframe(pd.DataFrame(us_bt), hide_index=True, use_container_width=True)
+
+        if info["summary"]:
+            with st.expander("🏢 사업 요약 (영문)"):
+                st.write(info["summary"])
+    else:
+        st.info("왼쪽 사이드바에 티커를 입력하고 **분석 실행**을 누르거나, 스크리너에서 → 버튼으로 이동하세요.")
 
 elif ss.market == "US" and mode == MODE_SCREEN:
     st.title("🏆 오늘의 후보 종목 — S&P500")
@@ -776,18 +926,20 @@ elif ss.market == "US" and mode == MODE_SCREEN:
             f"**{usr['run_date']} 기준** · S&P500 {usr['n_universe']}종목 중 "
             f"{usr['n_data']}종목 수신 → 거래대금 상위 {usr['n_liq']}종목 → 기술점수 상위 {len(usr['rows'])}종목"
         )
-        us_tbl = []
+        _w = [0.5, 0.9, 2.2, 1.1, 0.9, 1.0, 1.1, 0.5]
+        _h = st.columns(_w)
+        for _c, _t in zip(_h, ["순위", "티커", "종목", "섹터", "점수", "종가", "거래대금", "분석"]):
+            _c.markdown(f"**{_t}**")
         for i, r in enumerate(usr["rows"], 1):
-            us_tbl.append({
-                "순위":     i,
-                "티커":     r["code"],
-                "종목":     r["name"],
-                "섹터":     r["sector"],
-                "기술점수":  f"{r['score']:+.2f}",
-                "종가":     f"${r['close']:,.2f}",
-                "거래대금":  f"${r['value'] / 1e9:,.1f}B",
-            })
-        st.dataframe(pd.DataFrame(us_tbl), hide_index=True, use_container_width=True)
+            _c = st.columns(_w)
+            _c[0].write(i)
+            _c[1].write(f"`{r['code']}`")
+            _c[2].write(r["name"])
+            _c[3].write(us_data.sector_kr(r["sector"]))
+            _c[4].write(f"{r['score']:+.2f}")
+            _c[5].write(f"${r['close']:,.2f}")
+            _c[6].write(f"${r['value'] / 1e9:,.1f}B")
+            _c[7].button("→", key=f"us_go_{r['code']}", on_click=goto_us_detail, args=(r["code"],))
 
         for r in usr["rows"]:
             with st.expander(f"📊 {r['code']} {r['name']} — 멀티기간 백테스트 ({r['n_days']}거래일)"):

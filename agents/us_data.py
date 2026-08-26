@@ -90,3 +90,51 @@ def fetch_many(tickers: list[str], days: int = 1200,
 def fetch_benchmark(days: int = 1200) -> pd.DataFrame:
     """S&P500 지수 (^GSPC) 일봉."""
     return fetch_daily_prices("^GSPC", days=days)
+
+
+# ── 종목 기본 정보 ────────────────────────────────────────────────────────
+
+SECTOR_KR = {
+    "Information Technology": "IT",
+    "Health Care":            "헬스케어",
+    "Financials":             "금융",
+    "Consumer Discretionary": "임의소비재",
+    "Communication Services": "커뮤니케이션",
+    "Industrials":            "산업재",
+    "Consumer Staples":       "필수소비재",
+    "Energy":                 "에너지",
+    "Utilities":              "유틸리티",
+    "Real Estate":            "부동산",
+    "Materials":              "소재",
+    "Technology":             "IT",
+    "Healthcare":             "헬스케어",
+    "Financial Services":     "금융",
+    "Consumer Cyclical":      "임의소비재",
+    "Consumer Defensive":     "필수소비재",
+    "Basic Materials":        "소재",
+}
+
+
+def sector_kr(sector: str) -> str:
+    return SECTOR_KR.get(sector, sector)
+
+
+def ticker_info(ticker: str) -> dict:
+    """회사 기본 정보 (yfinance .info에서 필요한 것만)."""
+    import yfinance as yf
+    try:
+        info = yf.Ticker(ticker).info or {}
+    except Exception:
+        info = {}
+    return {
+        "name":       info.get("longName") or info.get("shortName") or ticker,
+        "sector":     info.get("sector") or "",
+        "industry":   info.get("industry") or "",
+        "market_cap": info.get("marketCap"),
+        "per":        info.get("trailingPE"),
+        "fwd_per":    info.get("forwardPE"),
+        "hi52":       info.get("fiftyTwoWeekHigh"),
+        "lo52":       info.get("fiftyTwoWeekLow"),
+        "div_yield":  info.get("dividendYield"),   # 이미 % 값 (yfinance 0.2.5x)
+        "summary":    info.get("longBusinessSummary") or "",
+    }
