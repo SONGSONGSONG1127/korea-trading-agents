@@ -119,20 +119,50 @@ def sector_kr(sector: str) -> str:
     return SECTOR_KR.get(sector, sector)
 
 
+_NAME_SUFFIXES = (" Corporation", " Incorporated", " Inc.", " Inc", " Company",
+                  " Co.", " Ltd.", " plc", " PLC", " Holdings", " Group",
+                  " (Class A)", " (Class B)", " (Class C)")
+
+
+def _clean_name(name: str) -> str:
+    out = name
+    for sfx in _NAME_SUFFIXES:
+        if out.endswith(sfx):
+            out = out[: -len(sfx)]
+    return out.strip().rstrip(",")
+
+
+def _wiki_title(query: str) -> str | None:
+    """제목 후보 탐색: opensearch → 전문검색(list=search) 폴백."""
+    r = requests.get(
+        "https://ko.wikipedia.org/w/api.php",
+        params={"action": "opensearch", "search": query, "limit": 1, "format": "json"},
+        headers=_HEADERS, timeout=8,
+    )
+    titles = r.json()[1]
+    if titles:
+        return titles[0]
+    r = requests.get(
+        "https://ko.wikipedia.org/w/api.php",
+        params={"action": "query", "list": "search", "srsearch": query,
+                "srlimit": 1, "format": "json"},
+        headers=_HEADERS, timeout=8,
+    )
+    hits = r.json().get("query", {}).get("search", [])
+    return hits[0]["title"] if hits else None
+
+
 def wiki_summary_kr(name: str) -> str | None:
     """한국어 위키피디아에서 회사 요약 2~3문장 (LLM 무사용). 없으면 None."""
     from urllib.parse import quote
     try:
-        r = requests.get(
-            "https://ko.wikipedia.org/w/api.php",
-            params={"action": "opensearch", "search": name, "limit": 1, "format": "json"},
-            headers=_HEADERS, timeout=8,
-        )
-        titles = r.json()[1]
-        if not titles:
+        title = _wiki_title(name)
+        if not title and _clean_name(name) != name:
+            title = _wiki_title(_clean_name(name))
+        if not title:
             return None
         s = requests.get(
-            f"https://ko.wikipedia.org/api/rest_v1/page/summary/{quote(titles[0])}",
+            f"https://ko.wikipedia.org/api/rest_v1/page/summary/{quote(title)}",
             headers=_HEADERS, timeout=8,
         ).json()
         extract = s.get("extract") or ""

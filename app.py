@@ -798,7 +798,7 @@ elif ss.market == "US" and mode == MODE_DETAIL:
                     _last = _enr.iloc[-1]
                     _tech.df = None  # 세션 캐시 경량화 (df는 별도 저장)
                     ss.us_results[_tk] = {
-                        "df":      _df.tail(400).reset_index(drop=True),
+                        "df":      _enr.tail(400).reset_index(drop=True),  # 지표 포함 (차트용)
                         "info":    _info,
                         "fund":    _fund,
                         "wiki":    _wiki,
@@ -847,104 +847,147 @@ elif ss.market == "US" and mode == MODE_DETAIL:
             c5.metric("52주 위치", "—")
         c6.metric("배당", f"{info['div_yield']:.2f}%" if info["div_yield"] else "—")
 
-        # ── 캔들차트 (최근 180일, MA20/60) ────────────────────────────
-        _dv = df_us.tail(180)
-        fig_us = go.Figure()
-        fig_us.add_candlestick(
-            x=_dv["date"], open=_dv["open"], high=_dv["high"],
-            low=_dv["low"], close=_dv["close"], name=_tk,
-            increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
-        )
-        _ma20 = _dv["close"].rolling(20).mean()
-        _ma60 = df_us["close"].rolling(60).mean().tail(180)
-        fig_us.add_scatter(x=_dv["date"], y=_ma20, name="MA20", mode="lines",
-                           line=dict(color="#f9a825", width=1.2))
-        fig_us.add_scatter(x=_dv["date"], y=_ma60, name="MA60", mode="lines",
-                           line=dict(color="#7e57c2", width=1.2))
-        fig_us.update_layout(
-            height=380, margin=dict(l=0, r=0, t=10, b=0),
-            xaxis_rangeslider_visible=False,
-            legend=dict(orientation="h", y=1.08),
-            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        )
-        fig_us.update_yaxes(gridcolor="rgba(128,128,128,0.15)", tickprefix="$")
-        st.plotly_chart(fig_us, use_container_width=True)
-
-        # ── 기술 지표 요약 ────────────────────────────────────────────
-        i1 = f"RSI **{ind['rsi']:.0f}**" + (" (과열)" if ind["rsi"] >= 70 else (" (과매도)" if ind["rsi"] <= 30 else ""))
-        i2 = f"20일선 대비 **{ind['ma20_gap']:+.1%}**"
-        i3 = f"60일선 대비 **{ind['ma60_gap']:+.1%}**" if ind["ma60_gap"] is not None else "60일선 —"
-        i4 = "MACD 히스토그램 **" + ("+" if ind["macd_hist"] > 0 else "−") + "**"
-        i5 = f"볼린저 %B **{ind['pct_b']:.2f}**"
-        i6 = f"상대거래량 **{ind['rvol']:.1f}배**"
-        i7 = f"ATR **{ind['atr_pct']:.1%}**/일"
-        st.markdown(" · ".join([i1, i2, i3, i4, i5, i6, i7]))
-
-        # ── 어떤 기업인가 (한글 요약) ─────────────────────────────────
+        # ── 어떤 기업인가 (한글 요약 카드) ────────────────────────────
         if r.get("wiki"):
-            st.info(f"🏢 **어떤 기업?** — {r['wiki']}")
-        elif info.get("summary"):
-            st.caption("🏢 한글 요약을 찾지 못했습니다. 아래 영문 사업 요약을 참고하세요.")
-
-        # ── 기술 신호 4축 (근거 포함) ─────────────────────────────────
-        _tr = r.get("tech")
-        if _tr and not getattr(_tr, "error", None):
-            _rg = r.get("regime")
-            with st.expander(
-                f"📐 기술 신호 상세 — 4축 {'/'.join(f'{k} {v:+.2f}' for k, v in _tr.cat_scores.items())}"
-                + (f" · 시장 {_rg[0]}" if _rg else "")
-            ):
-                if _rg:
-                    st.caption(f"시장 레짐: **{_rg[0]}** — {_rg[1]}")
-                for _cat in ["추세", "모멘텀", "거래량", "위치/변동성"]:
-                    _sigs = [s for s in _tr.signals if s.category == _cat]
-                    if not _sigs:
-                        continue
-                    st.markdown(f"**{_cat}** ({_tr.cat_scores.get(_cat, 0):+.2f})")
-                    for s in _sigs:
-                        _ic = "🔴" if s.score > 0 else ("🔵" if s.score < 0 else "⚪")
-                        st.caption(f"{_ic} {s.name} ({s.score:+.2f}) — {s.evidence}")
-                for _fl in getattr(_tr, "flags", []):
-                    st.warning(_fl)
+            st.markdown(
+                f'<div class="agent-card"><div class="agent-title">🏢 어떤 기업?</div>'
+                f'{r["wiki"]}</div>', unsafe_allow_html=True,
+            )
 
         # ── 펀더멘탈 (미장식: 섹터 상대 · FCF · 주주환원) ─────────────
         _f = r.get("fund")
         if _f:
-            st.markdown(f"#### 📋 펀더멘탈 — **{_f['score']}점 / {_f['grade']}**")
-            st.caption(
-                f"밸류에이션 {_f['val_score']}/35 (섹터 상대 fwd PER·EV/EBITDA·FCF yield·PEG) · "
-                f"품질 {_f['qual_score']}/35 (ROE·마진·부채) · "
-                f"성장·주주환원 {_f['growth_score']}/30"
+            st.markdown("### 📋 펀더멘탈 (섹터 상대 · 현금흐름 · 주주환원)")
+            _gcolor = UP_COLOR if _f["score"] >= 60 else ("#f9a825" if _f["score"] >= 45 else DOWN_COLOR)
+            st.markdown(
+                f'<div class="agent-card">'
+                f'<div class="agent-title">📋 미장식 펀더멘탈 점수</div>'
+                f'<div style="font-size:1.7rem; font-weight:800; color:{_gcolor};">'
+                f'{_f["score"]}<span style="font-size:1rem; color:gray;"> / 100 · {_f["grade"]}</span></div>'
+                f'<div style="font-size:0.85rem; color:gray; margin-top:0.2rem;">'
+                f'밸류에이션 <b>{_f["val_score"]}</b>/35 &nbsp;·&nbsp; '
+                f'품질 <b>{_f["qual_score"]}</b>/35 &nbsp;·&nbsp; '
+                f'성장·주주환원 <b>{_f["growth_score"]}</b>/30</div>'
+                f'</div>', unsafe_allow_html=True,
             )
             _chips = []
             if _f["fwd_pe"]:
-                _rel = (1 - _f["pe_ratio"]) * 100 if _f["pe_ratio"] else None
-                _chips.append(f"fwd PER **{_f['fwd_pe']:.1f}** (섹터 {_f['sector_pe']:.0f} 대비 {_rel:+.0f}%)" if _rel is not None else f"fwd PER **{_f['fwd_pe']:.1f}**")
+                if _f["pe_ratio"]:
+                    _rel = (1 - _f["pe_ratio"]) * 100
+                    _pc = UP_COLOR if _rel >= 10 else (DOWN_COLOR if _rel <= -10 else "#f9a825")
+                    _chips.append(f'<span class="fund-chip">fwd PER <b style="color:{_pc}">{_f["fwd_pe"]:.1f}배</b> (섹터 {_f["sector_pe"]:.0f}배 대비 {_rel:+.0f}%)</span>')
+                else:
+                    _chips.append(f'<span class="fund-chip">fwd PER <b>{_f["fwd_pe"]:.1f}배</b></span>')
             if _f["ev_ebitda"]:
-                _chips.append(f"EV/EBITDA **{_f['ev_ebitda']:.1f}**")
+                _c = UP_COLOR if _f["ev_ebitda"] < 11 else (DOWN_COLOR if _f["ev_ebitda"] > 18 else "#f9a825")
+                _chips.append(f'<span class="fund-chip">EV/EBITDA <b style="color:{_c}">{_f["ev_ebitda"]:.1f}</b></span>')
             if _f["fcf_yield"] is not None:
-                _chips.append(f"FCF수익률 **{_f['fcf_yield']:.1f}%**")
+                _c = UP_COLOR if _f["fcf_yield"] >= 4 else (DOWN_COLOR if _f["fcf_yield"] < 1.5 else "#f9a825")
+                _chips.append(f'<span class="fund-chip">FCF수익률 <b style="color:{_c}">{_f["fcf_yield"]:.1f}%</b></span>')
             if _f["peg"]:
-                _chips.append(f"PEG **{_f['peg']:.2f}**")
+                _c = UP_COLOR if _f["peg"] < 1.5 else (DOWN_COLOR if _f["peg"] > 2.5 else "#f9a825")
+                _chips.append(f'<span class="fund-chip">PEG <b style="color:{_c}">{_f["peg"]:.2f}</b></span>')
             if _f["roe"] is not None:
-                _chips.append(f"ROE **{_f['roe']:.0f}%**")
+                _c = UP_COLOR if _f["roe"] >= 15 else (DOWN_COLOR if _f["roe"] < 5 else "#f9a825")
+                _chips.append(f'<span class="fund-chip">ROE <b style="color:{_c}">{_f["roe"]:.0f}%</b></span>')
             if _f["gross_m"] is not None:
-                _chips.append(f"매출총이익률 **{_f['gross_m']:.0f}%**")
+                _c = UP_COLOR if _f["gross_m"] >= 50 else ("#f9a825" if _f["gross_m"] >= 30 else DOWN_COLOR)
+                _chips.append(f'<span class="fund-chip">매출총이익률 <b style="color:{_c}">{_f["gross_m"]:.0f}%</b></span>')
             if _f["op_m"] is not None:
-                _chips.append(f"영업마진 **{_f['op_m']:.0f}%**")
+                _c = UP_COLOR if _f["op_m"] >= 20 else ("#f9a825" if _f["op_m"] >= 10 else DOWN_COLOR)
+                _chips.append(f'<span class="fund-chip">영업마진 <b style="color:{_c}">{_f["op_m"]:.0f}%</b></span>')
             if _f["de"] is not None:
-                _chips.append(f"D/E **{_f['de']:.0f}%**")
+                _c = DOWN_COLOR if _f["de"] > 200 else ("#f9a825" if _f["de"] > 100 else UP_COLOR)
+                _chips.append(f'<span class="fund-chip">D/E <b style="color:{_c}">{_f["de"]:.0f}%</b></span>')
             if _f["rev_g"] is not None:
-                _chips.append(f"매출성장 **{_f['rev_g']:+.0f}%**")
+                _c = UP_COLOR if _f["rev_g"] >= 8 else (DOWN_COLOR if _f["rev_g"] < 0 else "#f9a825")
+                _chips.append(f'<span class="fund-chip">매출성장 <b style="color:{_c}">{_f["rev_g"]:+.0f}%</b></span>')
             if _f["sh_yield"] is not None:
-                _chips.append(f"주주환원율 **{_f['sh_yield']:.1f}%**")
+                _c = UP_COLOR if _f["sh_yield"] >= 3 else ("#f9a825" if _f["sh_yield"] >= 1.5 else "gray")
+                _chips.append(f'<span class="fund-chip">주주환원 <b style="color:{_c}">{_f["sh_yield"]:.1f}%</b></span>')
             if _chips:
-                st.markdown(" · ".join(_chips))
+                st.markdown(f'<div class="fund-row">{"".join(_chips)}</div>', unsafe_allow_html=True)
+                st.markdown("")
             if _f["narrative"]:
                 st.info(f"🧾 **재무 해석** — {_f['narrative']}")
 
+        # ── 기술적 분석 (K와 동일한 3단 차트 + 4축 신호) ──────────────
+        st.markdown("### 📊 기술적 분석 (4축 Signal)")
+        _rg = r.get("regime")
+        if _rg:
+            st.caption(f"시장 레짐: **{_rg[0]}** — {_rg[1]}")
+
+        plot_us = df_us.tail(90)
+        fig_us = make_subplots(
+            rows=3, cols=1, shared_xaxes=True,
+            row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.03,
+            subplot_titles=("일봉 / 이동평균선 / 볼린저밴드", "거래량", "RSI (14)"),
+        )
+        fig_us.add_trace(
+            go.Scatter(x=plot_us["date"], y=plot_us["bb_upper"], name="BB 상단",
+                       line=dict(width=0.8, color="rgba(128,128,128,0.5)"), mode="lines",
+                       showlegend=False), row=1, col=1)
+        fig_us.add_trace(
+            go.Scatter(x=plot_us["date"], y=plot_us["bb_lower"], name="볼린저밴드",
+                       line=dict(width=0.8, color="rgba(128,128,128,0.5)"), mode="lines",
+                       fill="tonexty", fillcolor="rgba(128,128,128,0.08)"), row=1, col=1)
+        fig_us.add_trace(
+            go.Candlestick(
+                x=plot_us["date"], open=plot_us["open"], high=plot_us["high"],
+                low=plot_us["low"], close=plot_us["close"], name="일봉",
+                increasing_line_color=UP_COLOR, decreasing_line_color=DOWN_COLOR,
+                increasing_fillcolor=UP_COLOR, decreasing_fillcolor=DOWN_COLOR,
+            ), row=1, col=1)
+        for _cn, _lb, _cl in [("ma5", "MA5", "#7b1fa2"), ("ma20", "MA20", "#ef6c00"), ("ma60", "MA60", "#2e7d32")]:
+            fig_us.add_trace(
+                go.Scatter(x=plot_us["date"], y=plot_us[_cn], name=_lb,
+                           line=dict(width=1.5, color=_cl), mode="lines"), row=1, col=1)
+        _vc = [UP_COLOR if c >= o else DOWN_COLOR for o, c in zip(plot_us["open"], plot_us["close"])]
+        fig_us.add_trace(
+            go.Bar(x=plot_us["date"], y=plot_us["volume"], name="거래량",
+                   marker_color=_vc, opacity=0.6), row=2, col=1)
+        fig_us.add_trace(
+            go.Scatter(x=plot_us["date"], y=plot_us["vol_ma20"], name="거래량 MA20",
+                       line=dict(width=1.2, color="#5e35b1"), mode="lines"), row=2, col=1)
+        fig_us.add_trace(
+            go.Scatter(x=plot_us["date"], y=plot_us["rsi"], name="RSI",
+                       line=dict(width=1.5, color="#5e35b1"), mode="lines"), row=3, col=1)
+        fig_us.add_hline(y=70, line_dash="dot", line_color=UP_COLOR, line_width=1, row=3, col=1)
+        fig_us.add_hline(y=30, line_dash="dot", line_color=DOWN_COLOR, line_width=1, row=3, col=1)
+        fig_us.update_layout(
+            height=760, xaxis_rangeslider_visible=False,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            margin=dict(t=60, b=20, l=10, r=10),
+            hovermode="x unified",
+        )
+        fig_us.update_yaxes(gridcolor="rgba(128,128,128,0.15)")
+        fig_us.update_xaxes(gridcolor="rgba(128,128,128,0.1)")
+        st.plotly_chart(fig_us, use_container_width=True)
+
+        _tr = r.get("tech")
+        if _tr and not getattr(_tr, "error", None):
+            usc1, usc2 = st.columns([1, 2])
+            with usc1:
+                st.markdown("**카테고리 점수** (합의 배수 ×{:.2f})".format(_tr.confluence_mult))
+                us_cat_df = pd.DataFrame(
+                    [{"카테고리": k, "가중치": technical_agent.CATEGORY_WEIGHTS[k], "점수": v}
+                     for k, v in _tr.cat_scores.items()]
+                )
+                st.dataframe(us_cat_df, hide_index=True, use_container_width=True,
+                             column_config={"점수": st.column_config.NumberColumn(format="%+.2f")})
+            with usc2:
+                st.markdown("**개별 신호와 증거**")
+                us_sig_df = pd.DataFrame(
+                    [{"카테고리": s.category, "신호": s.name, "점수": s.score, "증거": s.evidence}
+                     for s in _tr.signals]
+                )
+                st.dataframe(us_sig_df, hide_index=True, use_container_width=True,
+                             column_config={"점수": st.column_config.NumberColumn(format="%+.2f")})
+            for _fl in getattr(_tr, "flags", []):
+                st.warning(_fl)
+
         # ── 멀티기간 백테스트 ─────────────────────────────────────────
-        st.markdown("#### 멀티기간 백테스트 (기술점수 ≥ 0.30 신호)")
+        st.markdown("### 🧪 멀티기간 백테스트 (기술점수 ≥ 0.30 신호)")
         us_bt = []
         for p in r["periods"]:
             if "note" in p:
