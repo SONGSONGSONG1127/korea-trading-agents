@@ -15,7 +15,8 @@ from plotly.subplots import make_subplots
 
 from agents import (backdata_agent, backtest, community, discount_agent, fund_agent,
                     fundamental_agent, news_agent, portfolio_agent, scoring, screener,
-                    strategy_agent, technical_agent, us_data, us_fundamental, us_screener)
+                    stock_search, strategy_agent, technical_agent, us_data, us_fundamental,
+                    us_screener)
 
 st.set_page_config(
     page_title="K-TradingAgents | 한국 주식 멀티 에이전트 분석",
@@ -113,11 +114,13 @@ _store["us_results"] = ss.us_results
 
 
 def goto_detail(code: str) -> None:
-    ss["nav_from"] = ss.get("mode")   # 돌아가기용: 출발한 모드 기억
+    if ss.get("mode") != MODE_DETAIL:
+        ss["nav_from"] = ss.get("mode")   # 돌아가기용: 출발한 모드 기억
     ss["_nav_jump"] = True
     ss["mode"] = MODE_DETAIL
     ss["code_input"] = code
     ss["pending"] = code
+    ss["kr_candidates"] = None
 
 
 def nav_go_back() -> None:
@@ -129,11 +132,13 @@ def nav_go_back() -> None:
 
 
 def goto_us_detail(ticker: str) -> None:
-    ss["nav_from"] = ss.get("mode")
+    if ss.get("mode") != MODE_DETAIL:
+        ss["nav_from"] = ss.get("mode")
     ss["_nav_jump"] = True
     ss["mode"] = MODE_DETAIL
     ss["us_code_input"] = ticker
     ss["us_pending"] = ticker
+    ss["us_candidates"] = None
 
 
 def _set_market(m: str) -> None:
@@ -169,8 +174,9 @@ with st.sidebar:
         scan_btn = False
         if ss.market == "US":
             run_btn = False
-            us_code_in = st.text_input("티커", key="us_code_input",
-                                       placeholder="예: AAPL", help="미국 티커 심볼 (예: AAPL, NVDA, MSFT)")
+            us_code_in = st.text_input("티커 / 종목명", key="us_code_input",
+                                       placeholder="예: AAPL 또는 팔란티어",
+                                       help="티커(AAPL) 또는 한글·영문 이름(팔란티어, 엔비디아)으로 검색.")
             us_run_btn = st.button("🚀 분석 실행", type="primary", use_container_width=True)
             st.markdown(
                 "**자주 찾는 종목**\n\n"
@@ -181,8 +187,9 @@ with st.sidebar:
                 "- Alphabet `GOOGL`"
             )
         else:
-            code_in = st.text_input("종목코드 (6자리)", key="code_input",
-                                    help="예: 삼성전자 005930, SK하이닉스 000660")
+            code_in = st.text_input("종목코드 / 종목명", key="code_input",
+                                    help="코드(005930) 또는 이름(삼성전자)으로 검색. "
+                                         "부분 입력(삼성전)도 가능 — 후보 목록에서 선택.")
             run_btn = st.button("🚀 에이전트 분석 실행", type="primary", use_container_width=True)
             st.markdown(
                 "**자주 찾는 종목**\n\n"
@@ -780,7 +787,28 @@ elif ss.market == "US" and mode == MODE_DETAIL:
     if _p:
         _target = _p
     elif us_run_btn and us_code_in.strip():
-        _target = us_code_in
+        _q = us_code_in.strip()
+        if re.fullmatch(r"[A-Za-z.\-]{1,6}", _q):
+            _target = _q
+            ss.us_candidates = None
+        else:
+            # 한글·긴 이름 → 검색으로 티커 변환
+            _cands = stock_search.search(_q, market="US")
+            if len(_cands) == 1:
+                _target = _cands[0]["code"]
+                ss.us_candidates = None
+            elif _cands:
+                ss.us_candidates = {"query": _q, "items": _cands}
+            else:
+                st.warning(f"'{_q}' 검색 결과가 없습니다. 티커 또는 이름을 확인해 주세요.")
+                ss.us_candidates = None
+
+    _uc = ss.get("us_candidates")
+    if _uc and not _target:
+        st.markdown(f"**'{_uc['query']}' 검색 결과** — 분석할 종목을 선택하세요:")
+        for c in _uc["items"]:
+            st.button(f"🔍 {c['name']}  ·  {c['code']}  ·  {c['exchange']}",
+                      key=f"uss_{c['code']}", on_click=goto_us_detail, args=(c["code"],))
 
     if _target:
         _tk = _target.strip().upper()
@@ -1085,10 +1113,31 @@ elif mode == MODE_DETAIL:
 
     target, force = None, False
     if run_btn:
-        target, force = code_in, True
+        _q = code_in.strip()
+        if re.fullmatch(r"\d{4,6}", _q):
+            target, force = _q, True
+            ss.kr_candidates = None
+        else:
+            # 이름 검색 → 단일이면 바로 분석, 복수면 후보 선택
+            _cands = stock_search.search(_q, market="KR")
+            if len(_cands) == 1:
+                target, force = _cands[0]["code"], True
+                ss.kr_candidates = None
+            elif _cands:
+                ss.kr_candidates = {"query": _q, "items": _cands}
+            else:
+                st.warning(f"'{_q}' 검색 결과가 없습니다. 이름 또는 6자리 코드를 확인해 주세요.")
+                ss.kr_candidates = None
     pending = ss.pop("pending", None)
     if pending:
         target, force = pending, False
+
+    _kc = ss.get("kr_candidates")
+    if _kc and not target:
+        st.markdown(f"**'{_kc['query']}' 검색 결과** — 분석할 종목을 선택하세요:")
+        for c in _kc["items"]:
+            st.button(f"🔍 {c['name']}  ·  {c['code']}  ·  {c['exchange']}",
+                      key=f"krs_{c['code']}", on_click=goto_detail, args=(c["code"],))
 
     if target:
         code6 = re.sub(r"\D", "", target).zfill(6)
