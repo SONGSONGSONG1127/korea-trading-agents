@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from agents import (backdata_agent, backtest, community, discount_agent, fund_agent,
+from agents import (backdata_agent, backtest, chart_tutor, community, discount_agent, fund_agent,
                     fundamental_agent, news_agent, portfolio_agent, scoring, screener,
                     stock_search, strategy_agent, technical_agent, us_data, us_fundamental,
                     us_screener)
@@ -376,6 +376,23 @@ def score_color(score: int) -> str:
     return DOWN_COLOR
 
 
+def render_chart_tutor(df_enriched, unit: str = "원") -> None:
+    """차트 아래에 붙는 해석 + 공부 콘텐츠 (국장·미장 공통)."""
+    try:
+        items = chart_tutor.interpret(df_enriched, unit=unit)
+    except Exception:
+        return
+    with st.expander("🧭 지금 차트 읽기 — 해석과 공부 포인트", expanded=True):
+        for it in items:
+            st.markdown(f"**{it['title']}** · {it['state']}")
+            st.markdown(it["read"])
+            st.caption(f"💡 {it['tip']}")
+    with st.expander("📚 차트 공부방 — 지표 기초부터 함정까지"):
+        for _t, _body in chart_tutor.LESSONS:
+            st.markdown(f"**{_t}**")
+            st.caption(_body)
+
+
 def _fund_grade_color(grade: str) -> str:
     return {
         "매우 우량": UP_COLOR,
@@ -676,6 +693,8 @@ def render_analysis(news, tech, fund, strat, comm=None):
     fig.update_yaxes(gridcolor="rgba(128,128,128,0.15)")
     fig.update_xaxes(gridcolor="rgba(128,128,128,0.1)")
     st.plotly_chart(fig, use_container_width=True)
+
+    render_chart_tutor(df, unit="원")
 
     sc1, sc2 = st.columns([1, 2])
     with sc1:
@@ -991,6 +1010,8 @@ elif ss.market == "US" and mode == MODE_DETAIL:
         fig_us.update_yaxes(gridcolor="rgba(128,128,128,0.15)")
         fig_us.update_xaxes(gridcolor="rgba(128,128,128,0.1)")
         st.plotly_chart(fig_us, use_container_width=True)
+
+        render_chart_tutor(df_us, unit="달러")
 
         _tr = r.get("tech")
         if _tr and not getattr(_tr, "error", None):
