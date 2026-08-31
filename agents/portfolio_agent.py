@@ -20,8 +20,14 @@ SCOPES = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive",
 ]
-HEADER = ["code", "name", "buy_price", "quantity", "buy_date"]
+HEADER = ["code", "name", "buy_price", "quantity", "buy_date", "market"]
 DEFAULT_PORTFOLIO = "기본 계좌"
+
+
+def _norm_code(code: str) -> str:
+    """국장 6자리는 zfill, 미장 티커는 대문자 그대로."""
+    c = str(code).strip()
+    return c.zfill(6) if c.isdigit() else c.upper()
 
 
 # ── 데이터 모델 ───────────────────────────────────────────────────────────
@@ -33,6 +39,7 @@ class Position:
     buy_price: float
     quantity: int
     buy_date: str
+    market: str = "KR"   # "KR" | "US"
 
 
 @dataclass
@@ -42,6 +49,7 @@ class PositionSignal:
     buy_price: float
     quantity: int
     buy_date: str
+    market: str = "KR"
 
     current_price: float = 0.0
     atr: float = 0.0
@@ -145,11 +153,12 @@ def load_positions(portfolio: str = DEFAULT_PORTFOLIO) -> list[Position]:
     for r in records:
         try:
             positions.append(Position(
-                code=str(r["code"]).zfill(6),
+                code=_norm_code(r["code"]),
                 name=str(r["name"]),
                 buy_price=float(r["buy_price"]),
                 quantity=int(r["quantity"]),
                 buy_date=str(r["buy_date"]),
+                market=str(r.get("market") or "KR"),
             ))
         except (KeyError, ValueError):
             continue
@@ -160,19 +169,19 @@ def add_position(pos: Position, portfolio: str = DEFAULT_PORTFOLIO) -> None:
     """포지션 추가 (같은 종목 코드가 있으면 덮어씀)."""
     ws = _get_worksheet(portfolio)
     _delete_by_code(ws, pos.code)
-    ws.append_row([pos.code, pos.name, pos.buy_price, pos.quantity, pos.buy_date])
+    ws.append_row([pos.code, pos.name, pos.buy_price, pos.quantity, pos.buy_date, pos.market])
 
 
 def remove_position(code: str, portfolio: str = DEFAULT_PORTFOLIO) -> bool:
     """종목코드로 포지션 삭제. 성공 여부 반환."""
     ws = _get_worksheet(portfolio)
-    return _delete_by_code(ws, code.zfill(6))
+    return _delete_by_code(ws, _norm_code(code))
 
 
 def _delete_by_code(ws, code: str) -> bool:
     col = ws.col_values(1)
     for i, val in enumerate(col[1:], start=2):
-        if str(val).zfill(6) == code.zfill(6):
+        if _norm_code(val) == _norm_code(code):
             ws.delete_rows(i)
             return True
     return False
@@ -200,10 +209,15 @@ def calc_signal(pos: Position) -> PositionSignal:
     sig = PositionSignal(
         code=pos.code, name=pos.name,
         buy_price=pos.buy_price, quantity=pos.quantity, buy_date=pos.buy_date,
+        market=pos.market,
     )
 
     try:
-        df = technical_agent.fetch_daily_prices_fast(pos.code, days=60)
+        if pos.market == "US":
+            from . import us_data
+            df = us_data.fetch_daily_prices(pos.code, days=90)
+        else:
+            df = technical_agent.fetch_daily_prices_fast(pos.code, days=60)
         if len(df) < 20:
             sig.signal = "오류"
             sig.error = "시세 데이터 부족"
@@ -212,11 +226,12 @@ def calc_signal(pos: Position) -> PositionSignal:
         current_price = float(df["close"].iloc[-1])
         atr = _atr(df)
 
+        _r = (lambda v: round(v, 2)) if pos.market == "US" else (lambda v: round(v))
         sig.current_price = current_price
         sig.atr           = atr
-        sig.stop_loss     = round(pos.buy_price - 1.5 * atr)
-        sig.target1       = round(pos.buy_price + 2.0 * atr)
-        sig.target2       = round(pos.buy_price + 3.0 * atr)
+        sig.stop_loss     = _r(pos.buy_price - 1.5 * atr)
+        sig.target1       = _r(pos.buy_price + 2.0 * atr)
+        sig.target2       = _r(pos.buy_price + 3.0 * atr)
         sig.return_pct    = (current_price - pos.buy_price) / pos.buy_price * 100
         sig.profit_loss   = (current_price - pos.buy_price) * pos.quantity
         sig.eval_amount   = current_price * pos.quantity

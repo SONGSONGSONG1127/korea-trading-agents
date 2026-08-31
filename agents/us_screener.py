@@ -43,6 +43,7 @@ def run(liquidity_top: int = 200, n_top: int = 20, progress: ProgressCb = None) 
                 continue
             # 다운로드해 둔 데이터로 멀티기간 백테스트까지 즉시 계산 (추가 요청 0)
             periods = backtest.run_multiperiod(enriched)
+            _sg = df["close"].pct_change().tail(60).std()
             scored.append({
                 "code":    t,
                 "name":    meta[t]["name"],
@@ -50,6 +51,7 @@ def run(liquidity_top: int = 200, n_top: int = 20, progress: ProgressCb = None) 
                 "score":   round(float(q), 3),
                 "close":   float(df["close"].iloc[-1]),
                 "value":   dollar_vol[t],
+                "sigma60": float(_sg) if pd.notna(_sg) else None,
                 "periods": periods,
                 "n_days":  len(df),
             })

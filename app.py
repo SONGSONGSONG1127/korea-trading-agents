@@ -14,9 +14,9 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from agents import (backdata_agent, backtest, chart_tutor, community, discount_agent, fund_agent,
-                    fundamental_agent, news_agent, portfolio_agent, scoring, screener,
-                    stock_search, strategy_agent, technical_agent, us_data, us_fundamental,
-                    us_screener)
+                    fundamental_agent, news_agent, portfolio_agent, recommend_agent, scoring,
+                    screener, stock_search, strategy_agent, technical_agent, us_data,
+                    us_fundamental, us_screener)
 
 st.set_page_config(
     page_title="K-TradingAgents | 한국 주식 멀티 에이전트 분석",
@@ -787,11 +787,11 @@ def render_disclaimer():
 
 
 # ── USA 마켓 디스패치 ───────────────────────────────────────────────────
-if ss.market == "US" and mode in (MODE_PORTFOLIO, MODE_BACKDATA, MODE_DISCOUNT):
+if ss.market == "US" and mode in (MODE_BACKDATA, MODE_DISCOUNT):
     st.title(f"🇺🇸 {mode}")
     st.info(
         "이 모드의 미국 버전은 준비 중입니다. "
-        "현재 USA-Trading은 **🔍 종목 분석 · 🏆 오늘의 후보 종목 · 🏦 펀드 시뮬레이션**을 지원합니다. "
+        "현재 USA-Trading은 **🔍 종목 분석 · 🏆 오늘의 후보 종목 · 💼 포트폴리오 · 🏦 펀드 시뮬레이션**을 지원합니다. "
         "국장 기능은 왼쪽 상단 🇰🇷 K-Trading에서 그대로 사용할 수 있어요."
     )
 
@@ -1416,6 +1416,81 @@ elif mode == MODE_PORTFOLIO:
 
     # ── 계좌 선택 / 관리 바 ─────────────────────────────────────────────
     st.title("💼 내 포트폴리오")
+
+    # ── ✨ 추천 포트폴리오 생성기 (모의투자 시작점) ──────────────────────
+    ss.setdefault("reco", None)
+    _rmkt = ss.market
+    _runit = "$" if _rmkt == "US" else "원"
+    with st.expander(f"✨ 추천 포트폴리오 만들기 — {'🇺🇸 S&P500' if _rmkt == 'US' else '🇰🇷 국장'} 스크리너 기반"):
+        st.caption(
+            "스크리너 기술점수 상위 종목으로 비중·수량까지 계산해 드립니다. "
+            "모의투자 계좌로 저장하면 손절선·목표가·신호가 자동 추적되고, 같은 표로 실전 매수도 따라할 수 있어요."
+        )
+        rc1, rc2, rc3 = st.columns(3)
+        reco_n = rc1.slider("종목 수", 5, 15, 10, key="reco_n")
+        reco_w_label = rc2.selectbox("비중 방식", list(fund_agent.WEIGHT_LABELS.values()), key="reco_w")
+        _cap_default = 10_000.0 if _rmkt == "US" else 10_000_000.0
+        reco_cap = rc3.number_input(
+            f"투자금 ({_runit})", min_value=100.0, value=_cap_default,
+            step=1_000.0 if _rmkt == "US" else 1_000_000.0, key=f"reco_cap_{_rmkt}",
+        )
+        if st.button("🔮 추천 포트폴리오 생성", type="primary", key="reco_btn"):
+            with st.status("스크리너 실행 중... (30~60초)", expanded=True) as _rs:
+                _rbar = st.progress(0.0)
+                try:
+                    ss.reco = recommend_agent.build(
+                        market=_rmkt, n_stocks=int(reco_n),
+                        weighting={v: k for k, v in fund_agent.WEIGHT_LABELS.items()}[reco_w_label],
+                        capital=float(reco_cap),
+                        progress=lambda i, t, n: _rbar.progress(i / t, text=f"{i}/{t} — {n}"),
+                    )
+                    _rs.update(label="✅ 추천 생성 완료", state="complete", expanded=False)
+                except Exception as e:
+                    st.error(f"생성 실패: {e}")
+                    ss.reco = None
+
+        _reco = ss.get("reco")
+        if _reco and _reco["market"] == _rmkt:
+            _rfmt = (lambda v: f"${v:,.2f}") if _rmkt == "US" else (lambda v: f"{v:,.0f}원")
+            reco_tbl = [{
+                "종목":   f"{r['name']}({r['code']})",
+                "섹터":   us_data.sector_kr(r["sector"]) if r["sector"] else "—",
+                "점수":   f"{r['score']:+.2f}",
+                "비중":   f"{r['weight']:.0%}",
+                "현재가": _rfmt(r["price"]),
+                "수량":   r["qty"],
+                "금액":   _rfmt(r["amount"]),
+            } for r in _reco["rows"]]
+            st.dataframe(pd.DataFrame(reco_tbl), hide_index=True, use_container_width=True)
+            st.caption(
+                f"{_reco['run_date']} 기준 · 투자 {_rfmt(_reco['invested'])} + 현금 {_rfmt(_reco['cash'])} · "
+                f"{fund_agent.WEIGHT_LABELS.get(_reco['weighting'], _reco['weighting'])} · "
+                "⚠️ 기술점수 기반 후보이며 투자 권유가 아닙니다."
+            )
+            _rname_default = f"모의-{'US' if _rmkt == 'US' else 'K'}-{_reco['run_date'][5:].replace('-', '')}"
+            sv1, sv2 = st.columns([2, 1.4])
+            reco_name = sv1.text_input("모의투자 계좌명", value=_rname_default, key="reco_name")
+            sv2.markdown("<div style='height:1.7rem'></div>", unsafe_allow_html=True)
+            if sv2.button("📝 모의투자 계좌로 저장", type="primary", key="reco_save"):
+                try:
+                    portfolio_agent.add_portfolio(reco_name)
+                    _n_saved = 0
+                    for r in _reco["rows"]:
+                        if r["qty"] > 0:
+                            portfolio_agent.add_position(
+                                portfolio_agent.Position(
+                                    code=r["code"], name=r["name"],
+                                    buy_price=r["price"], quantity=int(r["qty"]),
+                                    buy_date=_reco["run_date"], market=_reco["market"],
+                                ),
+                                portfolio=reco_name,
+                            )
+                            _n_saved += 1
+                    ss.pf_selected = reco_name
+                    st.success(f"✅ '{reco_name}' 계좌에 {_n_saved}종목 저장 — 오늘 종가가 매수가로 기록됐습니다.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"저장 실패: {e}")
     bar_l, bar_m, bar_r = st.columns([3, 1.5, 1.5])
     with bar_l:
         selected_pf = st.selectbox(
@@ -1479,32 +1554,39 @@ elif mode == MODE_PORTFOLIO:
     with st.expander("➕ 포지션 추가", expanded=len(positions) == 0):
         with st.form("add_pos_form", clear_on_submit=True):
             fc1, fc2, fc3, fc4, fc5 = st.columns([1.2, 2, 1.5, 1.2, 1.5])
-            fc1.text_input("종목코드", placeholder="005930", key="pf_code")
+            fc1.text_input("종목코드/티커", placeholder="005930 또는 AAPL", key="pf_code")
             fc2.text_input("종목명", placeholder="삼성전자", key="pf_name")
-            fc3.number_input("매수가 (원)", min_value=1, value=70000, step=100, key="pf_price")
+            fc3.number_input("매수가", min_value=0.01, value=70000.0, step=100.0, key="pf_price")
             fc4.number_input("수량 (주)", min_value=1, value=10, step=1, key="pf_qty")
             fc5.text_input("매수일", placeholder="2025-01-15", key="pf_date")
             submitted = st.form_submit_button("추가", type="primary", use_container_width=True)
             if submitted:
-                code6 = re.sub(r"\D", "", ss.get("pf_code", "")).zfill(6)
-                if len(code6) == 6 and code6.isdigit():
+                _raw = ss.get("pf_code", "").strip()
+                if re.fullmatch(r"\d{4,6}", _raw):
+                    _pcode, _pmkt = _raw.zfill(6), "KR"
+                elif re.fullmatch(r"[A-Za-z.\-]{1,6}", _raw):
+                    _pcode, _pmkt = _raw.upper(), "US"
+                else:
+                    _pcode = None
+                if _pcode:
                     try:
                         portfolio_agent.add_position(
                             portfolio_agent.Position(
-                                code=code6,
-                                name=ss.get("pf_name", code6),
+                                code=_pcode,
+                                name=ss.get("pf_name", _pcode),
                                 buy_price=float(ss.get("pf_price", 0)),
                                 quantity=int(ss.get("pf_qty", 0)),
                                 buy_date=ss.get("pf_date", ""),
+                                market=_pmkt,
                             ),
                             portfolio=selected_pf,
                         )
-                        st.success(f"✅ {ss.get('pf_name', code6)} 추가됐습니다.")
+                        st.success(f"✅ {ss.get('pf_name', _pcode)} 추가됐습니다.")
                         st.rerun()
                     except Exception as e:
                         st.error(f"추가 실패: {e}")
                 else:
-                    st.warning("종목코드 6자리를 정확히 입력해주세요.")
+                    st.warning("국장은 6자리 코드(005930), 미장은 티커(AAPL)를 입력해주세요.")
 
     if not positions:
         st.info(f"**{selected_pf}**에 포지션이 없습니다. 위 폼에서 추가해주세요.")
@@ -1512,6 +1594,12 @@ elif mode == MODE_PORTFOLIO:
         # ── 신호 계산 ──────────────────────────────────────────────────
         with st.spinner("시세·ATR·전략점수 계산 중..."):
             signals = portfolio_agent.calc_all_signals(positions)
+
+        # 계좌 통화: 미장 포지션 포함 시 $ 표기
+        _pf_us  = any(s.market == "US" for s in signals)
+        _pfmt   = (lambda v: f"${v:,.2f}") if _pf_us else (lambda v: f"{v:,.0f}원")
+        _pfmt_s = (lambda v: f"${v:+,.2f}") if _pf_us else (lambda v: f"{v:+,.0f}원")
+        _pnum   = (lambda v: f"{v:,.2f}") if _pf_us else (lambda v: f"{v:,.0f}")
 
         # ── 요약 메트릭 ────────────────────────────────────────────────
         total_invest = sum(s.buy_price * s.quantity for s in signals)
@@ -1521,9 +1609,9 @@ elif mode == MODE_PORTFOLIO:
 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("포지션 수", f"{len(signals)}개")
-        m2.metric("총 매수금액", f"{total_invest:,.0f}원")
-        m3.metric("총 평가금액", f"{total_eval:,.0f}원")
-        m4.metric("총 손익", f"{total_pl:+,.0f}원", f"{total_pl_pct:+.1f}%",
+        m2.metric("총 매수금액", _pfmt(total_invest))
+        m3.metric("총 평가금액", _pfmt(total_eval))
+        m4.metric("총 손익", _pfmt_s(total_pl), f"{total_pl_pct:+.1f}%",
                   delta_color="normal" if total_pl >= 0 else "inverse")
 
         st.divider()
@@ -1542,15 +1630,15 @@ elif mode == MODE_PORTFOLIO:
             row = st.columns(col_w)
             row[0].markdown(f"`{sig.code}`")
             row[1].markdown(f"**{sig.name}**")
-            row[2].markdown(f"{sig.buy_price:,.0f}")
-            row[3].markdown(f"{sig.current_price:,.0f}" if sig.current_price else "—")
+            row[2].markdown(_pnum(sig.buy_price))
+            row[3].markdown(_pnum(sig.current_price) if sig.current_price else "—")
             row[4].markdown(
                 f"<span style='color:{rp_color}; font-weight:700'>{sig.return_pct:+.1f}%</span>",
                 unsafe_allow_html=True,
             )
-            row[5].markdown(f"{sig.stop_loss:,.0f}" if sig.stop_loss else "—")
-            row[6].markdown(f"{sig.target1:,.0f}" if sig.target1 else "—")
-            row[7].markdown(f"{sig.target2:,.0f}" if sig.target2 else "—")
+            row[5].markdown(_pnum(sig.stop_loss) if sig.stop_loss else "—")
+            row[6].markdown(_pnum(sig.target1) if sig.target1 else "—")
+            row[7].markdown(_pnum(sig.target2) if sig.target2 else "—")
             row[8].markdown(
                 f"<span style='color:{sc_color}; font-weight:700'>{sig.strategy_score:+d}</span>",
                 unsafe_allow_html=True,
@@ -1571,10 +1659,10 @@ elif mode == MODE_PORTFOLIO:
                     st.error(sig.error)
                 else:
                     d1, d2, d3 = st.columns(3)
-                    d1.metric("평가금액", f"{sig.eval_amount:,.0f}원")
-                    d2.metric("손익", f"{sig.profit_loss:+,.0f}원", f"{sig.return_pct:+.1f}%",
+                    d1.metric("평가금액", _pfmt(sig.eval_amount))
+                    d2.metric("손익", _pfmt_s(sig.profit_loss), f"{sig.return_pct:+.1f}%",
                               delta_color="normal" if sig.profit_loss >= 0 else "inverse")
-                    d3.metric("ATR(14)", f"{sig.atr:,.0f}원")
+                    d3.metric("ATR(14)", _pfmt(sig.atr))
                     st.markdown(
                         f"**신호 이유**: <span style='color:{color}'>{sig.signal_reason}</span>",
                         unsafe_allow_html=True,
