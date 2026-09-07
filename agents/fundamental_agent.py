@@ -496,6 +496,10 @@ def narrative(r: FundamentalReport) -> str:
 
     # ① 벌이의 구조: 매출 성장 × 영업이익률 조합
     rg, om, og = r.revenue_growth, r.op_margin, r.op_profit_growth
+    if om is not None and om > 80:
+        s.append(f"영업이익률이 {om:.0f}%로 비정상적으로 높습니다 — 지주회사의 지분법 이익이나 "
+                 f"일회성 이익일 가능성이 커서, 이익 지표는 액면 그대로 믿지 말고 사업보고서 확인이 필요해요.")
+        om = None  # 이하 벌이 구조 해석에서 제외
     if rg is not None and om is not None:
         if rg >= 10 and om >= 15:
             s.append(f"매출도 잘 늘고(+{rg:.0f}%) 남기는 힘도 좋습니다(영업이익률 {om:.0f}%) — 성장과 수익성을 다 갖춘 형태.")
@@ -541,9 +545,9 @@ def narrative(r: FundamentalReport) -> str:
     if r.per and r.per > 0 and r.sector_per and r.sector_per > 0:
         rel = (r.sector_per - r.per) / r.sector_per * 100
         if rel >= 20:
-            price_bits.append(f"이익 대비 업종보다 {rel:.0f}% 싸게")
+            price_bits.append(f"PER {r.per:.1f}배로 업종 평균({r.sector_per:.1f}배)보다 {rel:.0f}% 싸게")
         elif rel <= -20:
-            price_bits.append(f"이익 대비 업종보다 {-rel:.0f}% 비싸게")
+            price_bits.append(f"PER {r.per:.1f}배 — 절대 수준과 별개로 업종 평균({r.sector_per:.1f}배)보다는 {-rel:.0f}% 높게")
     if r.pbr and r.pbr > 0 and roe and roe > 0:
         fair = roe / 8.0
         disc = (fair - r.pbr) / fair * 100
