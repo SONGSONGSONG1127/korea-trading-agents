@@ -15,8 +15,8 @@ from plotly.subplots import make_subplots
 
 from agents import (backdata_agent, backtest, chart_tutor, community, discount_agent, fund_agent,
                     fundamental_agent, news_agent, portfolio_agent, recommend_agent, scoring,
-                    screener, stock_search, strategy_agent, technical_agent, us_data,
-                    us_fundamental, us_screener)
+                    screener, stock_search, strategy_agent, technical_agent, track_record,
+                    us_data, us_fundamental, us_screener)
 
 st.set_page_config(
     page_title="K-TradingAgents | 한국 주식 멀티 에이전트 분석",
@@ -83,6 +83,7 @@ MODE_PORTFOLIO = "💼 포트폴리오"
 MODE_BACKDATA  = "📅 백데이터 검증"
 MODE_FUND      = "🏦 펀드 시뮬레이션"
 MODE_DISCOUNT  = "💎 할인찬스"
+MODE_TRACK     = "📜 트랙레코드"
 
 ss = st.session_state
 
@@ -179,7 +180,8 @@ with st.sidebar:
         st.title("🇺🇸 USA-TradingAgents")
         st.caption("멀티 에이전트 미국 주식 분석 (S&P500) v1")
 
-    mode = st.radio("모드", [MODE_DETAIL, MODE_SCREEN, MODE_PORTFOLIO, MODE_BACKDATA, MODE_FUND, MODE_DISCOUNT], key="mode")
+    mode = st.radio("모드", [MODE_DETAIL, MODE_SCREEN, MODE_PORTFOLIO, MODE_BACKDATA,
+                            MODE_FUND, MODE_DISCOUNT, MODE_TRACK], key="mode")
     # 수동 모드 전환 시 '돌아가기' 목적지 무효화 (버튼 점프 직후 rerun은 예외)
     if ss.pop("_nav_jump", False):
         pass
@@ -334,7 +336,7 @@ with st.sidebar:
             "거래비용 편도 0.3% 반영 (수수료+세금+슬리피지) · 기준가 1,000원 시작 · "
             "⚠️ 생존 편향: 현재 상장 종목 기준."
         )
-    else:  # MODE_DISCOUNT
+    elif mode == MODE_DISCOUNT:
         scan_btn = False
         run_btn  = False
         st.markdown("**할인 탐색 설정**")
@@ -348,6 +350,14 @@ with st.sidebar:
             "저PER × 재무건전성(F-Score) × 안전마진(52주 할인+바닥 안정화) 조합. "
             "근거: Piotroski(2000), Fama-French(1992). 소요 1~2분."
         )
+    else:  # MODE_TRACK
+        scan_btn = False
+        run_btn  = False
+        st.caption(
+            "매일 아침 브리핑이 자동 기록한 top5 종목들이 이후 실제로 어떻게 갔는지 채점합니다. "
+            "표본이 쌓일수록 '이 스크리너를 믿을 근거'가 데이터로 완성됩니다."
+        )
+        tr_btn = st.button("📜 성과 채점 실행", type="primary", use_container_width=True)
 
 
 # ── 파이프라인 실행 ─────────────────────────────────────────────────────
@@ -2171,5 +2181,66 @@ elif mode == MODE_DISCOUNT:
                     st.caption(f"- **{e['name']}**({e['code']}): {e['reason']}")
     else:
         st.info("왼쪽 사이드바에서 조건을 정하고 **할인찬스 탐색** 버튼을 눌러주세요.")
+
+elif mode == MODE_TRACK:
+    _tmkt = ss.market
+    st.title(f"📜 트랙레코드 — {'🇺🇸 S&P500' if _tmkt == 'US' else '🇰🇷 국장'}")
+    st.caption(
+        "매일 아침 7시 브리핑이 `_트랙레코드` 시트에 기록한 기술점수 top5의 실제 성과입니다. "
+        "수익률 = 추천일 종가 → 현재가 · 초과수익 = 같은 기간 벤치마크 대비."
+    )
+    ss.setdefault("track_result", None)
+
+    if tr_btn:
+        with st.status("📜 트랙레코드 채점 중... (기록 종목 시세 조회)", expanded=True) as _ts:
+            _tbar = st.progress(0.0, text="기록 로드 중...")
+            try:
+                ss.track_result = track_record.evaluate(
+                    market=_tmkt,
+                    progress=lambda i, t, n: _tbar.progress(i / t, text=f"{i}/{t} — {n}"),
+                )
+                ss.track_result["market"] = _tmkt
+                _ts.update(label="✅ 채점 완료", state="complete", expanded=False)
+            except Exception as e:
+                st.error(f"채점 실패: {e}")
+                ss.track_result = None
+
+    _tres = ss.get("track_result")
+    if _tres and _tres.get("market") == _tmkt:
+        _tsum = _tres["summary"]
+        if not _tsum:
+            st.info(
+                "아직 이 시장의 기록이 없습니다. 매일 아침 브리핑이 실행되면 자동으로 쌓입니다 "
+                "(GitHub Actions → daily-alert)."
+            )
+        else:
+            _tfmt = (lambda v: f"${v:,.2f}") if _tmkt == "US" else (lambda v: f"{v:,.0f}원")
+            t1, t2, t3, t4 = st.columns(4)
+            t1.metric("표본", f"{_tsum['n']}픽 · {_tsum['n_days']}일")
+            t2.metric("평균 수익률", f"{_tsum['avg_ret']:+.1%}")
+            t3.metric("승률", f"{_tsum['win_rate']:.0%}")
+            t4.metric("벤치 대비 평균 초과",
+                      f"{_tsum['avg_excess']:+.1%}" if _tsum["avg_excess"] is not None else "N/A",
+                      f"초과 승률 {_tsum['excess_win']:.0%}" if _tsum["excess_win"] is not None else None,
+                      delta_color="off")
+            st.caption(
+                "🎯 핵심 지표는 **벤치 대비 초과**입니다 — 이게 지속적으로 +면 스크리너에 엣지가 있다는 뜻, "
+                "−면 지수를 사는 게 낫다는 뜻. 표본 30픽 미만에선 판단 보류."
+            )
+
+            _trows = [{
+                "추천일":  x["date"],
+                "순위":    x["rank"],
+                "종목":    f"{x['name']}({x['code']})",
+                "점수":    f"{x['score']:+.2f}",
+                "추천가":  _tfmt(x["entry"]),
+                "현재가":  _tfmt(x["current"]),
+                "수익률":  f"{x['ret']:+.1%}",
+                "벤치比":  f"{x['excess']:+.1%}" if x["excess"] is not None else "—",
+                "경과일":  x["days"],
+            } for x in _tres["rows"]]
+            st.dataframe(pd.DataFrame(_trows), hide_index=True, use_container_width=True)
+    else:
+        st.info("왼쪽 사이드바에서 **성과 채점 실행**을 눌러주세요. (기록은 매일 아침 자동 축적)")
 
 render_disclaimer()
