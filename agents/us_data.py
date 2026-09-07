@@ -152,6 +152,29 @@ def _wiki_title(query: str) -> str | None:
     return hits[0]["title"] if hits else None
 
 
+def usd_krw() -> float | None:
+    """현재 달러/원 환율 (yfinance USDKRW=X)."""
+    try:
+        df = fetch_daily_prices("USDKRW=X", days=7)
+        return float(df["close"].iloc[-1])
+    except Exception:
+        return None
+
+
+def dividends_since(ticker: str, since_date: str) -> float:
+    """since_date 이후 주당 배당 합계 (USD). 실패 시 0."""
+    import yfinance as yf
+    try:
+        divs = yf.Ticker(ticker).dividends
+        if divs is None or len(divs) == 0:
+            return 0.0
+        idx = divs.index.tz_localize(None) if divs.index.tz is not None else divs.index
+        cutoff = pd.Timestamp(since_date)
+        return float(divs[idx >= cutoff].sum())
+    except Exception:
+        return 0.0
+
+
 def wiki_summary_kr(name: str) -> str | None:
     """한국어 위키피디아에서 회사 요약 2~3문장 (LLM 무사용). 없으면 None."""
     from urllib.parse import quote

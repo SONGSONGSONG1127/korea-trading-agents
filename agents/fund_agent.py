@@ -283,7 +283,9 @@ def run(
                 px = stocks[c]["close"].loc[t]
                 info = entry_info.get(c)
                 if info and info["stop"] > 0 and not pd.isna(px) and px <= info["stop"]:
-                    cash += shares[c] * px * (1 - cost_rate)
+                    _val = shares[c] * px
+                    cash += _val * (1 - cost_rate)
+                    _nav_ref = daily[-1]["nav"] if daily else 1.0
                     stops.append({
                         "date":     t_str,
                         "code":     c,
@@ -291,6 +293,7 @@ def run(
                         "entry":    info["entry"],
                         "exit":     float(px),
                         "loss_pct": float(px / info["entry"] - 1),
+                        "pct":      float(_val / _nav_ref) if _nav_ref > 0 else 0.0,
                     })
                     del shares[c]
                     entry_info.pop(c, None)
@@ -458,6 +461,7 @@ def run(
             "avg_turnover": float(np.mean(turnovers)) if turnovers else 0.0,
             "n_rebalances": len(rebalances),
             "n_stops":      len(stops),
+            "stop_traded":  float(sum(s.get("pct", 0.0) for s in stops)),  # NAV 대비 손절 매도 누적
             "n_days":       n_days,
         },
     }

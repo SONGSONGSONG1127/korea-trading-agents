@@ -60,6 +60,7 @@ class PositionSignal:
     return_pct: float = 0.0    # %
     profit_loss: float = 0.0   # 원
     eval_amount: float = 0.0   # 평가금액
+    dividends: float = 0.0     # 보유 기간 배당 수령액 (US만 계산)
 
     strategy_score: int = 0    # -100 ~ +100 (score_series × 100)
     signal: str = "확인중"     # 손절 / 익절 / 익절 고려 / 보유 / 오류
@@ -216,6 +217,8 @@ def calc_signal(pos: Position) -> PositionSignal:
         if pos.market == "US":
             from . import us_data
             df = us_data.fetch_daily_prices(pos.code, days=90)
+            if pos.buy_date:
+                sig.dividends = us_data.dividends_since(pos.code, pos.buy_date) * pos.quantity
         else:
             df = technical_agent.fetch_daily_prices_fast(pos.code, days=60)
         if len(df) < 20:

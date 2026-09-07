@@ -59,6 +59,24 @@ st.markdown(
 UP_COLOR = "#d32f2f"
 DOWN_COLOR = "#1565c0"
 
+# ── 접속 코드 게이트 (secrets에 APP_PASSCODE 있을 때만 활성) ─────────────
+_APP_PASS = ""
+try:
+    _APP_PASS = str(st.secrets.get("APP_PASSCODE", ""))
+except Exception:
+    pass
+if _APP_PASS:
+    if not st.session_state.get("authed"):
+        st.title("🔒 TradingAgents")
+        _pw = st.text_input("접속 코드", type="password", key="gate_pw")
+        if _pw:
+            if _pw == _APP_PASS:
+                st.session_state["authed"] = True
+                st.rerun()
+            else:
+                st.error("접속 코드가 올바르지 않습니다.")
+        st.stop()
+
 MODE_DETAIL    = "🔍 종목 분석"
 MODE_SCREEN    = "🏆 오늘의 후보 종목"
 MODE_PORTFOLIO = "💼 포트폴리오"
@@ -1477,17 +1495,21 @@ elif mode == MODE_PORTFOLIO:
                     _n_saved = 0
                     for r in _reco["rows"]:
                         if r["qty"] > 0:
+                            # 실전 재현성: 수수료+슬리피지 0.3% 가산한 체결가로 기록
+                            _bp = r["price"] * 1.003
+                            _bp = round(_bp, 2) if _reco["market"] == "US" else round(_bp)
                             portfolio_agent.add_position(
                                 portfolio_agent.Position(
                                     code=r["code"], name=r["name"],
-                                    buy_price=r["price"], quantity=int(r["qty"]),
+                                    buy_price=_bp, quantity=int(r["qty"]),
                                     buy_date=_reco["run_date"], market=_reco["market"],
                                 ),
                                 portfolio=reco_name,
                             )
                             _n_saved += 1
                     ss.pf_selected = reco_name
-                    st.success(f"✅ '{reco_name}' 계좌에 {_n_saved}종목 저장 — 오늘 종가가 매수가로 기록됐습니다.")
+                    st.success(f"✅ '{reco_name}' 계좌에 {_n_saved}종목 저장 — "
+                               f"종가 + 0.3%(수수료·슬리피지)가 매수가로 기록됐습니다.")
                     st.rerun()
                 except Exception as e:
                     st.error(f"저장 실패: {e}")
@@ -1613,6 +1635,13 @@ elif mode == MODE_PORTFOLIO:
         m3.metric("총 평가금액", _pfmt(total_eval))
         m4.metric("총 손익", _pfmt_s(total_pl), f"{total_pl_pct:+.1f}%",
                   delta_color="normal" if total_pl >= 0 else "inverse")
+
+        if _pf_us:
+            _fx = us_data.usd_krw()
+            _div_total = sum(s.dividends for s in signals)
+            _fx_txt = (f"환율 {_fx:,.0f}원 기준 총평가 ≈ ₩{total_eval * _fx:,.0f}" if _fx else "환율 조회 실패")
+            _dv_txt = f" · 보유기간 배당 수령 ${_div_total:,.2f}" if _div_total > 0 else ""
+            st.caption(f"💱 {_fx_txt}{_dv_txt} (배당은 수익률에 미포함, 별도 표시)")
 
         st.divider()
 
@@ -1911,8 +1940,9 @@ elif mode == MODE_FUND:
         _cagr = f"연환산 {m['cagr']:+.1%}" if m["cagr"] is not None else ""
         st.caption(
             f"{fres['start_date']} ~ {fres['end_date']} · {m['n_days']}거래일 · "
-            f"{_cagr} · 리밸런싱 {m['n_rebalances']}회 · 평균 회전율 {m['avg_turnover']:.0%} · "
-            f"후보 풀 {fres['n_scanned']}종목 (리밸런싱마다 유니버스 재탐색)"
+            f"{_cagr} · 리밸런싱 {m['n_rebalances']}회 · 평균 회전율 {m['avg_turnover']:.0%}"
+            + (f" · 손절 매도 누적 {m['stop_traded']:.0%}" if m.get("n_stops") else "")
+            + f" · 후보 풀 {fres['n_scanned']}종목 (리밸런싱마다 유니버스 재탐색)"
         )
         st.caption(
             f"실행 조건: {'🇺🇸 S&P500' if _is_us else '🇰🇷 국장'} · "
