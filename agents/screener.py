@@ -43,46 +43,42 @@ class Candidate:
     comm: object = None           # community.Buzz (참고용)
 
 
+def _num(s) -> float:
+    try:
+        return float(str(s).replace(",", ""))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _market_leaders(kospi_pages: int = 4, kosdaq_pages: int = 3) -> list[Candidate]:
-    """시가총액 상위 페이지(코스피/코스닥)에서 종목 목록을 모은다. 페이지당 50종목."""
+    """시가총액 상위 목록 (m.stock JSON API, 페이지당 50종목).
+
+    2026-09 네이버 금융 개편으로 구 HTML 크롤링에서 공식 JSON API로 이관.
+    거래대금(accumulatedTradingValue, 백만원)을 직접 제공해 근사 계산이 불필요해졌다.
+    """
     out: dict[str, Candidate] = {}
-    jobs = [(0, p) for p in range(1, kospi_pages + 1)] + [(1, p) for p in range(1, kosdaq_pages + 1)]
-    for sosok, page in jobs:
-        url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}"
-        res = requests.get(url, headers=HEADERS, timeout=10)
+    jobs = [("KOSPI", p) for p in range(1, kospi_pages + 1)] + \
+           [("KOSDAQ", p) for p in range(1, kosdaq_pages + 1)]
+    for mkt, page in jobs:
+        res = requests.get(
+            f"https://m.stock.naver.com/api/stocks/marketValue/{mkt}",
+            params={"page": page, "pageSize": 50}, headers=HEADERS, timeout=10,
+        )
         res.raise_for_status()
-        res.encoding = "euc-kr"
-        soup = BeautifulSoup(res.text, "lxml")
-        for row in soup.select("table.type_2 tr"):
-            a = row.select_one("a.tltle")
-            if not a:
+        for s in res.json().get("stocks", []):
+            if s.get("stockEndType") != "stock":
+                continue  # ETF/ETN/리츠 등 제외
+            code = str(s.get("itemCode", ""))
+            name = str(s.get("stockName", ""))
+            # 우선주(끝자리 0 아님)·스팩·동전주 제외
+            if not re.fullmatch(r"\d{6}", code) or not code.endswith("0") or "스팩" in name:
                 continue
-            m = re.search(r"code=(\d{6})", a.get("href", ""))
-            if not m:
-                continue
-            code = m.group(1)
-            name = a.get_text(strip=True)
-            # 우선주(끝자리 0 아님)·스팩·ETF/ETN·동전주 제외
-            if not code.endswith("0") or "스팩" in name:
-                continue
-            etf_words = ("KODEX", "TIGER", "ACE ", "SOL ", "PLUS ", "RISE ", "KIWOOM",
-                         "HANARO", "ARIRANG", "KOSEF", "액티브", "레버리지", "인버스",
-                         "ETN", "채권", "선물", "TOP10", "나스닥", "S&P")
-            if any(w in name for w in etf_words):
-                continue
-            tds = [td.get_text(strip=True).replace(",", "") for td in row.select("td")]
-            nums = [float(t) for t in tds if re.fullmatch(r"\d+(\.\d+)?", t)]
-            # 기본 컬럼 순서: N, 현재가, 전일비, 액면가, 시총, 상장주식수, 외인비율, 거래량, PER, ROE
-            try:
-                price = float(tds[2])
-                volume = float(tds[9])
-            except (IndexError, ValueError):
-                if len(nums) < 3:
-                    continue
-                price, volume = nums[1], nums[-3]
+            price = _num(s.get("closePrice"))
+            value = _num(s.get("accumulatedTradingValue")) * 1_000_000  # 백만원 → 원
             if price < 1000:
                 continue
-            out[code] = Candidate(code=code, name=name, close=price, value=price * volume)
+            out[code] = Candidate(code=code, name=name, close=price, value=value)
+        time.sleep(0.05)
     return sorted(out.values(), key=lambda c: -c.value)
 
 

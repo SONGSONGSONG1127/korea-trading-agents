@@ -111,15 +111,44 @@ def _get(url: str) -> BeautifulSoup:
     return BeautifulSoup(res.text, "lxml")
 
 
+def _api_json(url: str, params: dict | None = None):
+    """네이버 모바일 주식 JSON API (2026-09 페이지 개편 후 공식 데이터 경로)."""
+    res = requests.get(url, headers=HEADERS, params=params, timeout=10)
+    res.raise_for_status()
+    return res.json()
+
+
 def fetch_stock_name(code: str) -> str:
     try:
-        soup = _get(f"https://finance.naver.com/item/main.naver?code={code}")
-        tag = soup.select_one("div.wrap_company h2 a")
-        if tag:
-            return tag.get_text(strip=True)
+        d = _api_json(f"https://m.stock.naver.com/api/stock/{code}/integration")
+        name = d.get("stockName")
+        if name:
+            return str(name)
     except Exception:
         pass
     return code
+
+
+def _fetch_news_api(code: str, pages: int = 3, page_size: int = 20) -> list[NewsItem]:
+    """종목 뉴스 (m.stock API). 제목의 HTML 태그·엔티티 제거."""
+    import html as _html
+    items: list[NewsItem] = []
+    for page in range(1, pages + 1):
+        d = _api_json(f"https://m.stock.naver.com/api/news/stock/{code}",
+                      params={"pageSize": page_size, "page": page})
+        groups = d if isinstance(d, list) else [d]
+        for g in groups:
+            for it in (g.get("items") or []):
+                title = _html.unescape(re.sub(r"<[^>]+>", "", str(it.get("title", "")))).strip()
+                if not title:
+                    continue
+                dt = str(it.get("datetime", ""))
+                date_str = (f"{dt[0:4]}.{dt[4:6]}.{dt[6:8]} {dt[8:10]}:{dt[10:12]}"
+                            if len(dt) >= 12 else "")
+                url = it.get("mobileNewsUrl") or ""
+                items.append(NewsItem(title=title, source=str(it.get("officeName", "")),
+                                      date=date_str, url=url, kind="뉴스"))
+    return items
 
 
 def _parse_age_days(date_str: str) -> float:
@@ -223,21 +252,26 @@ def run(code: str, news_pages: int = 3) -> NewsReport:
 
     raw: list[NewsItem] = []
     try:
-        for page in range(1, news_pages + 1):
-            raw += _fetch_rows(
-                f"https://finance.naver.com/item/news_news.naver?code={code}&page={page}&clusterId=",
-                "뉴스", "",
-            )
+        raw += _fetch_news_api(code, pages=news_pages)
     except Exception as e:
         report.error = f"뉴스 수집 실패: {e}"
         return report
     try:
-        raw += _fetch_rows(
-            f"https://finance.naver.com/item/news_notice.naver?code={code}&page=1",
-            "공시", "전자공시",
-        )
+        # 공시 (m.stock API)
+        d = _api_json(f"https://m.stock.naver.com/api/stock/{code}/notice",
+                      params={"pageSize": 20, "page": 1})
+        notices = d if isinstance(d, list) else (d.get("notices") or d.get("items") or [])
+        for it in notices:
+            title = str(it.get("title", "")).strip()
+            if not title:
+                continue
+            dt = str(it.get("datetime") or it.get("date") or "")
+            date_str = (f"{dt[0:4]}.{dt[4:6]}.{dt[6:8]}" if len(dt) >= 8 and dt.isdigit()
+                        else dt[:16].replace("-", "."))
+            raw.append(NewsItem(title=title, source="전자공시", date=date_str,
+                                url=str(it.get("url") or ""), kind="공시"))
     except Exception:
-        pass  # 공시 탭 실패는 치명적이지 않음
+        pass  # 공시 실패는 치명적이지 않음
 
     for it in raw:
         score_item(it)

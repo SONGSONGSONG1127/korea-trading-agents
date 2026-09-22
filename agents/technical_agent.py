@@ -121,19 +121,12 @@ def fetch_daily_prices(code: str, pages: int = 26) -> pd.DataFrame:
 
 
 def fetch_market_regime(index_code: str = "KOSPI") -> tuple[str, str]:
-    """KOSPI 지수 vs 60일선으로 시장 레짐(순풍/역풍/중립)을 판정한다."""
-    frames = []
-    for page in range(1, 15):
-        url = f"https://finance.naver.com/sise/sise_index_day.naver?code={index_code}&page={page}"
-        res = requests.get(url, headers=HEADERS, timeout=10)
-        res.raise_for_status()
-        res.encoding = "euc-kr"
-        tables = pd.read_html(StringIO(res.text))
-        if not tables:
-            break
-        frames.append(tables[0])
-    idx = pd.concat(frames, ignore_index=True).dropna(subset=["체결가"])
-    close = pd.to_numeric(idx["체결가"]).iloc[::-1].reset_index(drop=True)  # 오름차순
+    """KOSPI 지수 vs 60일선으로 시장 레짐(순풍/역풍/중립)을 판정한다.
+
+    2026-09 네이버 개편으로 일별 시세 페이지가 사라져 차트 JSON API 사용.
+    """
+    df = fetch_daily_prices_fast(index_code, days=150)
+    close = df["close"].reset_index(drop=True)
     if len(close) < 60:
         return "중립", "지수 데이터 부족"
     ma60 = close.rolling(60).mean().iloc[-1]

@@ -108,55 +108,36 @@ def _num(text: str) -> float | None:
 # ── 스크래핑 ──────────────────────────────────────────────────────────────
 
 def _fetch_main(code: str) -> dict:
-    """네이버 종목 메인에서 PER·PBR·업종PER·ROE(분기)·배당 수집."""
-    soup = _get(f"https://finance.naver.com/item/main.naver?code={code}")
-    result: dict = {}
+    """종목 기본 지표 수집 (m.stock integration API).
 
-    # PER / PBR — ID 셀렉터 (가장 안정적)
-    for key, eid in [("per", "_per"), ("pbr", "_pbr"), ("eps", "_eps")]:
-        tag = soup.select_one(f"#{eid}")
-        if tag:
-            v = _num(tag.get_text(strip=True))
-            if v is not None:
-                result[key] = v
+    2026-09 네이버 개편으로 HTML 파싱에서 JSON API로 이관.
+    업종PER·분기ROE는 신규 API에 없어 결측 처리 (점수 함수가 None 허용;
+    ROE는 DART 확보 시 채워짐).
+    """
+    res = requests.get(f"https://m.stock.naver.com/api/stock/{code}/integration",
+                       headers=HEADERS, timeout=10)
+    res.raise_for_status()
+    data = res.json()
+    info = {i.get("code"): i.get("value") for i in (data.get("totalInfos") or [])
+            if isinstance(i, dict)}
 
-    # 업종PER / 배당 — per_table 행 순서 기반 (2번째 행=업종PER, 4번째=배당)
-    # 인코딩 문제로 th 텍스트 비교 불가 → 위치로 파싱
-    per_tbl = soup.select_one("table.per_table")
-    if per_tbl:
-        rows = per_tbl.select("tr")
-        def _first_num(row_idx: int) -> float | None:
-            if row_idx >= len(rows):
-                return None
-            tds = rows[row_idx].select("td")
-            if not tds:
-                return None
-            # td 텍스트에서 첫 번째 숫자 추출 ("6.00배|47,816원" → 6.0)
-            nums = re.findall(r"\d+\.?\d*", tds[0].get_text(strip=True))
-            return float(nums[0]) if nums else None
-        result["sector_per"] = _first_num(1)   # 2번째 행: 업종PER
-        result["div_yield"]  = _first_num(3)   # 4번째 행: 배당수익률
+    def _v(key: str) -> float | None:
+        raw = info.get(key)
+        if raw in (None, "", "N/A"):
+            return None
+        nums = re.findall(r"-?\d+\.?\d*", str(raw).replace(",", ""))
+        return float(nums[0]) if nums else None
 
-    # ROE 분기 데이터 — "ROE"가 포함된 첫 번째 th 행 (분기 누적 ROE)
-    # 인코딩 문제로 "분기" 텍스트 매칭 불가 → "ROE" 포함 첫 행 사용
-    roe_q: list[float] = []
-    for tbl in soup.find_all("table"):
-        if roe_q:
-            break
-        for row in tbl.find_all("tr"):
-            ths = row.find_all("th")
-            tds = row.find_all("td")
-            for th in ths:
-                if "ROE" in th.get_text(strip=True) and len(tds) >= 4:
-                    vals = [_num(td.get_text(strip=True)) for td in tds]
-                    raw = [v for v in vals if v is not None]
-                    # 이상치 제거: 단기 분기 ROE가 50% 초과면 특수 항목 → 제외
-                    roe_q = [v for v in raw if v <= 50]
-                    break
-            if roe_q:
-                break
-
-    result["roe_quarters"] = roe_q
+    result: dict = {
+        "per":          _v("per"),
+        "pbr":          _v("pbr"),
+        "eps":          _v("eps"),
+        "div_yield":    _v("dividendYieldRatio"),
+        "sector_per":   None,   # 신규 API 미제공
+        "roe_quarters": [],     # 신규 API 미제공 (DART로 대체)
+    }
+    if data.get("stockName"):
+        result["stock_name"] = str(data["stockName"])
     return result
 
 

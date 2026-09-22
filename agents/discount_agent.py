@@ -43,47 +43,34 @@ _ETF_WORDS = ("KODEX", "TIGER", "ACE ", "SOL ", "PLUS ", "RISE ", "KIWOOM",
               "ETN", "채권", "선물", "TOP10", "나스닥", "S&P")
 
 
-def _market_pool_with_per(kospi_pages: int = 6, kosdaq_pages: int = 4) -> list[dict]:
-    """시총 상위 페이지에서 종목 + 페이지 PER 컬럼 수집 (시총 순 유지)."""
+def _market_pool_with_per(kospi_pages: int = 6, kosdaq_pages: int = 4,
+                          per_scan: int = 250) -> list[dict]:
+    """시총 상위 목록 + 종목별 PER (m.stock JSON API).
+
+    2026-09 네이버 개편: 목록 API에 PER이 없어, 시총 상위 per_scan 종목에
+    integration API로 PER을 조회한다 (종목당 요청 1번, 약 25~30초).
+    """
+    from .screener import _market_leaders
+    leaders = _market_leaders(kospi_pages=kospi_pages, kosdaq_pages=kosdaq_pages)
     out: list[dict] = []
-    seen: set[str] = set()
-    jobs = [(0, p) for p in range(1, kospi_pages + 1)] + [(1, p) for p in range(1, kosdaq_pages + 1)]
-    for sosok, page in jobs:
-        url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}"
-        res = requests.get(url, headers=HEADERS, timeout=10)
-        res.raise_for_status()
-        res.encoding = "euc-kr"
-        soup = BeautifulSoup(res.text, "lxml")
-        for row in soup.select("table.type_2 tr"):
-            a = row.select_one("a.tltle")
-            if not a:
-                continue
-            m = re.search(r"code=(\d{6})", a.get("href", ""))
-            if not m:
-                continue
-            code = m.group(1)
-            name = a.get_text(strip=True)
-            if code in seen or not code.endswith("0") or "스팩" in name:
-                continue
-            if any(w in name for w in _ETF_WORDS):
-                continue
-            tds = [td.get_text(strip=True).replace(",", "") for td in row.select("td")]
-            # 컬럼: N,종목명,현재가,전일비,등락률,액면가,시가총액,상장주식수,외국인비율,거래량,PER,ROE
-            try:
-                price = float(tds[2])
-            except (IndexError, ValueError):
-                continue
-            if price < 1000:
-                continue
-            def _f(i: int) -> float | None:
-                try:
-                    return float(tds[i])
-                except (IndexError, ValueError):
-                    return None
-            out.append({"code": code, "name": name, "price": price,
-                        "per": _f(10), "roe": _f(11)})
-            seen.add(code)
-        time.sleep(0.05)
+    for c in leaders[:per_scan]:
+        per = None
+        try:
+            res = requests.get(
+                f"https://m.stock.naver.com/api/stock/{c.code}/integration",
+                headers=HEADERS, timeout=10,
+            )
+            info = {i.get("code"): i.get("value")
+                    for i in (res.json().get("totalInfos") or []) if isinstance(i, dict)}
+            raw = info.get("per")
+            if raw not in (None, "", "N/A"):
+                nums = re.findall(r"-?\d+\.?\d*", str(raw).replace(",", ""))
+                per = float(nums[0]) if nums else None
+        except Exception:
+            pass
+        out.append({"code": c.code, "name": c.name, "price": c.close,
+                    "per": per, "roe": None})
+        time.sleep(0.08)
     return out
 
 
