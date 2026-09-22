@@ -66,20 +66,9 @@ def _diversify(ranked: list[dict], data: dict, n_stocks: int) -> tuple[list[dict
     return picked, skipped
 
 
-def build(
-    market: str = "KR",
-    n_stocks: int = 10,
-    weighting: str = "equal",
-    capital: float = 10_000_000,
-    progress: ProgressCb = None,
-) -> dict:
-    """
-    market    : "KR" | "US"
-    n_stocks  : 편입 종목 수
-    weighting : "equal" | "inv_vol" | "score" (score = 멀티팩터 컴포지트 비례)
-    capital   : 투자금 (KR: 원, US: 달러)
-    """
-    # ── 1. 데이터 로드 (팩터 계산에 550거래일 이상 필요) ─────────────────
+def load_market_data(market: str = "KR", progress: ProgressCb = None
+                     ) -> tuple[dict, pd.DataFrame, dict]:
+    """팩터 계산용 유니버스 가격 데이터 + 벤치마크 + 메타. (추천·라이브펀드 공용)"""
     if market == "US":
         univ = us_data.sp500_universe()
         meta = {u["code"]: {"name": u["name"], "sector": u["sector"]} for u in univ}
@@ -101,6 +90,24 @@ def build(
                 continue
             time.sleep(0.05)
         bench = technical_agent.fetch_daily_prices_fast("KOSPI", days=800)
+    return data, bench, meta
+
+
+def build(
+    market: str = "KR",
+    n_stocks: int = 10,
+    weighting: str = "equal",
+    capital: float = 10_000_000,
+    progress: ProgressCb = None,
+) -> dict:
+    """
+    market    : "KR" | "US"
+    n_stocks  : 편입 종목 수
+    weighting : "equal" | "inv_vol" | "score" (score = 멀티팩터 컴포지트 비례)
+    capital   : 투자금 (KR: 원, US: 달러)
+    """
+    # ── 1. 데이터 로드 (팩터 계산에 550거래일 이상 필요) ─────────────────
+    data, bench, meta = load_market_data(market, progress=progress)
 
     # ── 2. 멀티팩터 랭킹 (IC 검증 통과 팩터만 자동 편입) ──────────────────
     sr = factors.smart_rank(data, bench, n_top=n_stocks * 3)

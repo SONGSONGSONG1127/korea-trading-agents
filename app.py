@@ -14,8 +14,8 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from agents import (backdata_agent, backtest, chart_tutor, community, discount_agent, fund_agent,
-                    fundamental_agent, news_agent, portfolio_agent, recommend_agent, regime,
-                    scoring, screener, stock_search, strategy_agent, technical_agent,
+                    fundamental_agent, live_fund, news_agent, portfolio_agent, recommend_agent,
+                    regime, scoring, screener, stock_search, strategy_agent, technical_agent,
                     track_record, us_data, us_fundamental, us_screener)
 
 st.set_page_config(
@@ -1527,11 +1527,19 @@ elif mode == MODE_PORTFOLIO:
                     + (f" · 🔗 상관 분산: 동행 클러스터 초과로 {len(_cs)}종목 제외" if _cs else " · 🔗 상관 분산 적용")
                     + " · ⚠️ 투자 권유가 아닙니다."
                 )
-            _rname_default = f"모의-{'US' if _rmkt == 'US' else 'K'}-{_reco['run_date'][5:].replace('-', '')}"
+            reco_fund = st.checkbox(
+                "🏦 펀드로 운용 (4주 주기 자동 리밸런싱)", value=False, key="reco_fund",
+                help="매일 아침 브리핑이 주기 도래 시 멀티팩터 랭킹을 재실행해, 버퍼 규칙(보유 종목은 "
+                     "랭크 3×N 밖으로 밀릴 때만 교체)으로 자동 편출입하고 매매이력에 기록·텔레그램 통보합니다. "
+                     "펀드 시뮬레이션에서 검증된 규칙 그대로입니다.",
+            )
+            _rprefix = "펀드" if reco_fund else "모의"
+            _rname_default = f"{_rprefix}-{'US' if _rmkt == 'US' else 'K'}-{_reco['run_date'][5:].replace('-', '')}"
             sv1, sv2 = st.columns([2, 1.4])
-            reco_name = sv1.text_input("모의투자 계좌명", value=_rname_default, key="reco_name")
+            reco_name = sv1.text_input("계좌명", value=_rname_default, key="reco_name")
             sv2.markdown("<div style='height:1.7rem'></div>", unsafe_allow_html=True)
-            if sv2.button("📝 모의투자 계좌로 저장", type="primary", key="reco_save"):
+            _save_label = "🏦 펀드 개시" if reco_fund else "📝 모의투자 계좌로 저장"
+            if sv2.button(_save_label, type="primary", key="reco_save"):
                 try:
                     portfolio_agent.add_portfolio(reco_name)
                     _n_saved = 0
@@ -1549,9 +1557,19 @@ elif mode == MODE_PORTFOLIO:
                                 portfolio=reco_name,
                             )
                             _n_saved += 1
+                    if reco_fund:
+                        live_fund.save_config(
+                            account=reco_name, market=_reco["market"],
+                            n_stocks=len([r for r in _reco["rows"] if r["qty"] > 0]),
+                            rebalance_days=20, weighting=_reco["weighting"],
+                            start_date=_reco["run_date"],
+                        )
                     ss.pf_selected = reco_name
-                    st.success(f"✅ '{reco_name}' 계좌에 {_n_saved}종목 저장 — "
-                               f"종가 + 0.3%(수수료·슬리피지)가 매수가로 기록됐습니다.")
+                    _msg = (f"✅ 펀드 '{reco_name}' 개시 — {_n_saved}종목, 4주 주기 자동 리밸런싱이 "
+                            f"아침 브리핑에서 관리됩니다." if reco_fund else
+                            f"✅ '{reco_name}' 계좌에 {_n_saved}종목 저장 — "
+                            f"종가 + 0.3%(수수료·슬리피지)가 매수가로 기록됐습니다.")
+                    st.success(_msg)
                     st.rerun()
                 except Exception as e:
                     st.error(f"저장 실패: {e}")

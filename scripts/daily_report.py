@@ -39,7 +39,7 @@ def portfolio_section(dry: bool = False) -> tuple[str, int]:
             total_ev = sum(s.eval_amount for s in sigs)
             pl_pct = (total_ev / total_inv - 1) * 100 if total_inv else 0
             lines.append(f"*{pf}* — 수익률 {pl_pct:+.1f}% ({len(sigs)}종목)")
-            is_paper = pf.startswith("모의")
+            is_paper = pf.startswith(("모의", "펀드"))
             for s in alerts:
                 n_alerts += 1
                 if is_paper and s.signal in ("손절", "익절") and not s.error:
@@ -140,12 +140,21 @@ def main() -> None:
     track_rows: list = []
     rg_text = regime_section()
     pf_text, n_alerts = portfolio_section(dry=args.dry)
+
+    # 라이브 펀드 리밸런싱 (주기 도래 시에만 실행됨)
+    try:
+        from agents import live_fund
+        fund_lines = live_fund.process_rebalances(dry=args.dry)
+    except Exception as e:
+        fund_lines = [f"(펀드 리밸런싱 실패: {e})"]
+    fund_text = "\n".join(fund_lines)
+
     sc_text = screener_section(track_rows)
 
     head = f"📈 *TradingAgents 브리핑* — {now.strftime('%m/%d %a')}"
     if n_alerts:
         head += f"\n⚠️ *신호 {n_alerts}건 발생 — 포트폴리오 확인 필요*"
-    msg = "\n\n".join(x for x in [head, rg_text, pf_text, sc_text] if x.strip())
+    msg = "\n\n".join(x for x in [head, rg_text, pf_text, fund_text, sc_text] if x.strip())
 
     if args.dry:
         print(msg)
