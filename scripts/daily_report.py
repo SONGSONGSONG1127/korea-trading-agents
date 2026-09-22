@@ -24,8 +24,8 @@ TRACK_SHEET = "_트랙레코드"
 TRACK_HEADER = ["날짜", "시장", "순위", "코드", "종목", "점수", "종가"]
 
 
-def portfolio_section() -> tuple[str, int]:
-    """전 계좌 신호 요약. (텍스트, 경보 수)"""
+def portfolio_section(dry: bool = False) -> tuple[str, int]:
+    """전 계좌 신호 요약. '모의' 계좌는 손절/익절 신호를 자동 집행. (텍스트, 경보 수)"""
     from agents import portfolio_agent
     lines, n_alerts = [], 0
     try:
@@ -39,9 +39,22 @@ def portfolio_section() -> tuple[str, int]:
             total_ev = sum(s.eval_amount for s in sigs)
             pl_pct = (total_ev / total_inv - 1) * 100 if total_inv else 0
             lines.append(f"*{pf}* — 수익률 {pl_pct:+.1f}% ({len(sigs)}종목)")
+            is_paper = pf.startswith("모의")
             for s in alerts:
                 n_alerts += 1
-                lines.append(f"  🚨 {s.signal}: {s.name} — {s.signal_reason}")
+                if is_paper and s.signal in ("손절", "익절") and not s.error:
+                    # 모의계좌: 자동 청산 + 매매이력 기록 (실계좌는 알림만)
+                    if dry:
+                        lines.append(f"  🤖[dry] 자동 {s.signal} 예정: {s.name}")
+                    else:
+                        try:
+                            t = portfolio_agent.close_position(s, portfolio=pf)
+                            lines.append(f"  🤖 자동 {t['signal']} 집행: {t['name']} "
+                                         f"→ 손익 {t['ret']:+.1f}% ({s.signal_reason})")
+                        except Exception as e:
+                            lines.append(f"  🚨 {s.signal}: {s.name} (자동 집행 실패: {e})")
+                else:
+                    lines.append(f"  🚨 {s.signal}: {s.name} — {s.signal_reason}")
     except Exception as e:
         lines.append(f"(포트폴리오 점검 실패: {e})")
     return "\n".join(lines), n_alerts
@@ -51,15 +64,24 @@ def screener_section(track_rows: list) -> str:
     """K/USA 스크리너 top5 + 트랙레코드 행 축적."""
     today = datetime.now(KST).strftime("%Y-%m-%d")
     lines = []
-    try:
-        from agents import screener
-        top = screener.stage1(liquidity_top=120)[:5]
-        lines.append("*🇰🇷 오늘의 기술점수 top5*")
-        for i, c in enumerate(top, 1):
-            lines.append(f"  {i}. {c.name} ({c.code}) {c.quick_score:+.2f} · {c.close:,.0f}원")
-            track_rows.append([today, "KR", i, c.code, c.name, c.quick_score, c.close])
-    except Exception as e:
-        lines.append(f"(K 스크리너 실패: {e})")
+    # K 스크리너 — Actions 서버에서 네이버 차단이 잦아 3회 재시도
+    import time as _time
+    from agents import screener
+    for attempt in range(1, 4):
+        try:
+            top = screener.stage1(liquidity_top=120)[:5]
+            if not top:
+                raise ValueError("결과 0건")
+            lines.append("*🇰🇷 오늘의 기술점수 top5*")
+            for i, c in enumerate(top, 1):
+                lines.append(f"  {i}. {c.name} ({c.code}) {c.quick_score:+.2f} · {c.close:,.0f}원")
+                track_rows.append([today, "KR", i, c.code, c.name, c.quick_score, c.close])
+            break
+        except Exception as e:
+            if attempt == 3:
+                lines.append(f"(K 스크리너 3회 실패: {e})")
+            else:
+                _time.sleep(60)
     try:
         from agents import us_screener
         res = us_screener.run(liquidity_top=100, n_top=5)
@@ -102,7 +124,7 @@ def main() -> None:
         return
 
     track_rows: list = []
-    pf_text, n_alerts = portfolio_section()
+    pf_text, n_alerts = portfolio_section(dry=args.dry)
     sc_text = screener_section(track_rows)
 
     head = f"📈 *TradingAgents 브리핑* — {now.strftime('%m/%d %a')}"

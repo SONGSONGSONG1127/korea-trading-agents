@@ -188,6 +188,61 @@ def _delete_by_code(ws, code: str) -> bool:
     return False
 
 
+# ── 매매 이력 (모의계좌 자동 집행 기록) ──────────────────────────────────
+
+TRADE_SHEET = "_매매이력"
+TRADE_HEADER = ["날짜", "계좌", "코드", "종목", "매수가", "매도가", "수량",
+                "손익", "수익률(%)", "사유", "시장"]
+
+
+def _trade_ws():
+    import gspread
+    sh = _spreadsheet()
+    try:
+        ws = sh.worksheet(TRADE_SHEET)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=TRADE_SHEET, rows=2000, cols=12)
+        ws.update(values=[TRADE_HEADER], range_name="A1")
+    return ws
+
+
+def close_position(sig: "PositionSignal", portfolio: str,
+                   cost_rate: float = 0.003) -> dict:
+    """신호에 따라 포지션 청산: 매매이력 기록 후 포트폴리오에서 제거.
+
+    매도가 = 현재가 × (1 − cost_rate)  (수수료·세금·슬리피지 반영)
+    """
+    from datetime import datetime
+    sell_px = sig.current_price * (1 - cost_rate)
+    pl = (sell_px - sig.buy_price) * sig.quantity
+    ret = (sell_px / sig.buy_price - 1) * 100 if sig.buy_price else 0.0
+    _trade_ws().append_row([
+        datetime.now().strftime("%Y-%m-%d"),
+        portfolio, sig.code, sig.name,
+        round(sig.buy_price, 2), round(sell_px, 2), sig.quantity,
+        round(pl, 2), round(ret, 2),
+        f"{sig.signal} — {sig.signal_reason}"[:200],
+        sig.market,
+    ])
+    remove_position(sig.code, portfolio=portfolio)
+    return {"code": sig.code, "name": sig.name, "signal": sig.signal,
+            "sell_px": sell_px, "pl": pl, "ret": ret}
+
+
+def load_trades(portfolio: str | None = None) -> list[dict]:
+    """매매 이력 조회 (계좌 필터 선택)."""
+    import gspread
+    sh = _spreadsheet()
+    try:
+        ws = sh.worksheet(TRADE_SHEET)
+    except gspread.WorksheetNotFound:
+        return []
+    rows = ws.get_all_records()
+    if portfolio:
+        rows = [r for r in rows if str(r.get("계좌")) == portfolio]
+    return rows
+
+
 # ── ATR 계산 ──────────────────────────────────────────────────────────────
 
 def _atr(df: pd.DataFrame, period: int = 14) -> float:

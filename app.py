@@ -1722,6 +1722,23 @@ elif mode == MODE_PORTFOLIO:
                     except Exception as e:
                         st.error(f"삭제 실패: {e}")
 
+    # ── 매매 이력 (모의계좌 자동 집행 기록) ─────────────────────────────
+    with st.expander("🧾 매매 이력 — 자동 집행·청산 기록"):
+        st.caption("모의계좌는 매일 아침 브리핑이 손절/익절 신호를 자동 집행하고 여기에 기록합니다. (실계좌는 알림만)")
+        if st.button("이력 불러오기", key="pf_trades_btn"):
+            try:
+                ss.pf_trades = portfolio_agent.load_trades(selected_pf)
+            except Exception as e:
+                st.error(f"이력 로드 실패: {e}")
+                ss.pf_trades = None
+        _tr_rows = ss.get("pf_trades")
+        if _tr_rows:
+            st.dataframe(pd.DataFrame(_tr_rows).iloc[::-1], hide_index=True, use_container_width=True)
+            _pl_sum = sum(float(r.get("손익") or 0) for r in _tr_rows)
+            st.caption(f"청산 {len(_tr_rows)}건 · 실현 손익 합계 {_pl_sum:+,.0f}")
+        elif _tr_rows is not None:
+            st.caption(f"'{selected_pf}' 계좌의 매매 이력이 없습니다.")
+
 # ── 모드: 백데이터 검증 ─────────────────────────────────────────────────
 elif mode == MODE_BACKDATA:
     from datetime import date, timedelta
