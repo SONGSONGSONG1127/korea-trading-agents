@@ -120,23 +120,35 @@ def build(
     rows: list[dict] = []
     for r in picked:
         m = meta.get(r["code"], {})
+        # ATR(14)% — 리스크균등(1% 룰) 사이징용
+        atr_pct = None
+        df = data.get(r["code"])
+        if df is not None and len(df) >= 20:
+            h, l, c = df["high"], df["low"], df["close"]
+            pc = c.shift(1)
+            tr = pd.concat([h - l, (h - pc).abs(), (l - pc).abs()], axis=1).max(axis=1)
+            a = tr.rolling(14).mean().iloc[-1]
+            if pd.notna(a) and c.iloc[-1] > 0:
+                atr_pct = float(a / c.iloc[-1])
         rows.append({
-            "code":   r["code"],
-            "name":   m.get("name", r["code"]),
-            "sector": m.get("sector", ""),
-            "score":  float(r["composite"]),
-            "tech":   r["tech"],
-            "lowvol": r["lowvol"],
-            "resmom": r["resmom"],
-            "price":  float(r["close"]),
-            "sigma":  (-r["lowvol"]) if r["lowvol"] is not None else None,
+            "code":    r["code"],
+            "name":    m.get("name", r["code"]),
+            "sector":  m.get("sector", ""),
+            "score":   float(r["composite"]),
+            "tech":    r["tech"],
+            "lowvol":  r["lowvol"],
+            "resmom":  r["resmom"],
+            "price":   float(r["close"]),
+            "sigma":   (-r["lowvol"]) if r["lowvol"] is not None else None,
+            "atr_pct": atr_pct,
         })
 
     # ── 3. 비중 배분 → 수량 산출 ──────────────────────────────────────────
     codes = [r["code"] for r in rows]
     scores = {r["code"]: r["score"] for r in rows}
     sigmas = {r["code"]: r["sigma"] for r in rows}
-    weights = fund_agent._weights(weighting, codes, scores, sigmas)
+    atr_pcts = {r["code"]: r["atr_pct"] for r in rows if r["atr_pct"]}
+    weights = fund_agent._weights(weighting, codes, scores, sigmas, atr_pcts)
 
     invested = 0.0
     for r in rows:

@@ -317,10 +317,10 @@ with st.sidebar:
                                 help="보유 종목은 점수 랭크가 편입수×3 밖으로 밀릴 때만 교체(버퍼 규칙)되어 "
                                      "회전율과 거래비용을 억제합니다.")
         fd_weight = st.selectbox(
-            "비중 방식", list(fund_agent.WEIGHT_LABELS.values()), key="fd_weight",
-            help="균등: DeMiguel et al.(2009) 1/N — 기본이자 기준선 · "
-                 "역변동성: 리스크 패리티(Maillard et al. 2010), 변동성 낮은 종목에 더 배분 · "
-                 "점수비례: 기술점수에 비례 배분(모멘텀 공격형)",
+            "비중 방식", list(fund_agent.WEIGHT_LABELS.values()), index=3, key="fd_weight",
+            help="균등: 1/N (DeMiguel 2009) · 역변동성: 리스크 패리티 · 점수비례: 공격형 · "
+                 "리스크균등(1% 룰): 손절 시 종목당 손실 = 자본의 1%가 되게 사이징, 잔여는 현금 (트레이더 표준) · "
+                 "확신도: 점수÷변동성 (퀀트 정보비율 가중, 상한 20%)",
         )
         fd_voltgt = st.checkbox(
             "변동성 타겟팅 (연 15%)", value=False, key="fd_voltgt",
@@ -1474,7 +1474,10 @@ elif mode == MODE_PORTFOLIO:
         render_regime_banner(_rmkt)
         rc1, rc2, rc3 = st.columns(3)
         reco_n = rc1.slider("종목 수", 5, 15, 10, key="reco_n")
-        reco_w_label = rc2.selectbox("비중 방식", list(fund_agent.WEIGHT_LABELS.values()), key="reco_w")
+        reco_w_label = rc2.selectbox("비중 방식", list(fund_agent.WEIGHT_LABELS.values()),
+                                     index=3, key="reco_w",
+                                     help="기본 추천: 리스크균등(1% 룰) — 1년 백테스트에서 수익·MDD·샤프 모두 1위. "
+                                          "손절 시 종목당 손실이 자본의 1%로 통제되고, 잔여는 현금 보유.")
         _cap_default = "10,000" if _rmkt == "US" else "10,000,000"
         _cap_txt = rc3.text_input(f"투자금 ({_runit})", value=_cap_default,
                                   key=f"reco_cap_txt_{_rmkt}")

@@ -51,10 +51,13 @@ _VOL_TARGET_DEFAULT = 0.15  # 연 15%
 
 REBALANCE_OPTIONS = {"1주": 5, "2주": 10, "4주": 20}
 WEIGHT_LABELS = {
-    "equal":   "균등 (1/N)",
-    "inv_vol": "역변동성 (리스크 패리티)",
-    "score":   "점수비례",
+    "equal":      "균등 (1/N)",
+    "inv_vol":    "역변동성 (리스크 패리티)",
+    "score":      "점수비례",
+    "risk_1pct":  "리스크균등 (1% 룰)",
+    "conviction": "확신도 (점수/변동성)",
 }
+_W_CAP = 0.20  # 신규 방식 종목당 상한 (실무 상한 규칙)
 
 # ── 시뮬레이션 로그 (Google Sheets, "_" 접두사 = 시스템 탭) ────────────────
 
@@ -130,9 +133,74 @@ def _fetch_kospi(days: int = _FETCH_DAYS) -> pd.DataFrame | None:
         return None
 
 
+def _cap_normalize(raw: dict[str, float], cap: float = _W_CAP) -> dict[str, float]:
+    """합=1 정규화 + 종목당 상한 (초과분은 미달 종목에 워터필링 재배분).
+
+    종목 수가 적어 n×cap < 1이면 상한을 1/n로 완화해 실현 가능하게 만든다.
+    """
+    n = len(raw)
+    if n == 0:
+        return {}
+    cap = max(cap, 1.0 / n + 1e-12)
+    total = sum(v for v in raw.values() if v > 0)
+    if total <= 0:
+        return {c: 1.0 / n for c in raw}
+    w = {c: max(v, 0.0) / total for c, v in raw.items()}
+    capped: set[str] = set()
+    for _ in range(n):
+        over = [c for c in w if c not in capped and w[c] > cap + 1e-12]
+        if not over:
+            break
+        capped.update(over)
+        remainder = 1.0 - cap * len(capped)
+        free = [c for c in w if c not in capped]
+        free_total = sum(w[c] for c in free)
+        for c in capped:
+            w[c] = cap
+        if free:
+            if free_total > 0:
+                for c in free:
+                    w[c] = w[c] / free_total * remainder
+            else:
+                for c in free:
+                    w[c] = remainder / len(free)
+    return w
+
+
 def _weights(scheme: str, codes: list[str], scores: dict[str, float],
-             sigmas: dict[str, float]) -> dict[str, float]:
-    """비중 방식별 정규화 가중치 (합 = 1)."""
+             sigmas: dict[str, float],
+             atr_pcts: dict[str, float] | None = None) -> dict[str, float]:
+    """비중 방식별 가중치.
+
+    equal/inv_vol/score : 합 = 1 (기존 그대로)
+    risk_1pct           : 손절(−1.5×ATR) 시 각 종목 손실 = 자본의 1%가 되는 절대 비중.
+                          합이 1 미만이면 잔여는 현금 (리스크 기반 총노출 — 트레이더 표준)
+    conviction          : 점수 ÷ 변동성 (퀀트의 정보비율 가중 간이판), 상한 20%
+    """
+    atr_pcts = atr_pcts or {}
+
+    if scheme == "risk_1pct":
+        w = {}
+        for c in codes:
+            ap = atr_pcts.get(c)
+            if not ap or ap <= 0:
+                s = sigmas.get(c)
+                ap = 1.4 * s if s and s > 0 else None  # ATR 근사 폴백
+            w[c] = min(0.01 / (1.5 * ap), _W_CAP) if ap else 0.05
+        total = sum(w.values())
+        if total > 1.0:
+            w = {c: v / total for c, v in w.items()}
+        return w  # 합 ≤ 1 허용 — 잔여는 현금
+
+    if scheme == "conviction":
+        s_min = min((scores.get(c, 0.0) for c in codes), default=0.0)
+        raw = {}
+        for c in codes:
+            conv = scores.get(c, 0.0) - s_min + 0.1   # 양수화
+            sd = sigmas.get(c)
+            raw[c] = conv / sd if sd and sd > 1e-6 else conv
+        return _cap_normalize(raw)
+
     if scheme == "inv_vol":
         raw = {}
         for c in codes:
@@ -332,12 +400,16 @@ def run(
             picked = kept + fresh
 
             if picked:
-                # 역변동성용 σ (최근 60거래일)
-                sigmas = {}
+                # 역변동성용 σ (최근 60거래일) + 리스크균등용 ATR%
+                sigmas, atr_pcts = {}, {}
                 for c in picked:
                     r = stocks[c]["ret"].loc[:t].tail(60)
                     sigmas[c] = float(r.std()) if len(r) >= 20 else None
-                w = _weights(weighting, picked, cand_scores, sigmas)
+                    a = stocks[c]["atr"].loc[t]
+                    px = stocks[c]["close"].loc[t]
+                    if not pd.isna(a) and px > 0:
+                        atr_pcts[c] = float(a / px)
+                w = _weights(weighting, picked, cand_scores, sigmas, atr_pcts)
 
                 # 변동성 타겟팅: KOSPI 20일 실현변동성 기준 주식 비중 축소
                 eq_frac = 1.0
