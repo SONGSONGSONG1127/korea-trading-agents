@@ -1475,12 +1475,13 @@ elif mode == MODE_PORTFOLIO:
         rc1, rc2, rc3 = st.columns(3)
         reco_n = rc1.slider("종목 수", 5, 15, 10, key="reco_n")
         reco_w_label = rc2.selectbox("비중 방식", list(fund_agent.WEIGHT_LABELS.values()), key="reco_w")
-        _cap_default = 10_000.0 if _rmkt == "US" else 10_000_000.0
-        reco_cap = rc3.number_input(
-            f"투자금 ({_runit})", min_value=100.0, value=_cap_default,
-            step=1_000.0 if _rmkt == "US" else 1_000_000.0, key=f"reco_cap_{_rmkt}",
-        )
-        if st.button("🔮 추천 포트폴리오 생성", type="primary", key="reco_btn"):
+        _cap_default = "10,000" if _rmkt == "US" else "10,000,000"
+        _cap_txt = rc3.text_input(f"투자금 ({_runit})", value=_cap_default,
+                                  key=f"reco_cap_txt_{_rmkt}")
+        reco_cap = float(re.sub(r"[^\d]", "", _cap_txt) or 0)
+        rc3.caption(f"적용: **{reco_cap:,.0f}{_runit}**" if reco_cap > 0 else "⚠️ 금액을 입력하세요")
+        if st.button("🔮 추천 포트폴리오 생성", type="primary", key="reco_btn",
+                     disabled=reco_cap <= 0):
             with st.status("스크리너 실행 중... (30~60초)", expanded=True) as _rs:
                 _rbar = st.progress(0.0)
                 try:
