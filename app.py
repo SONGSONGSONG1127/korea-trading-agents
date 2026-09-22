@@ -14,9 +14,9 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from agents import (backdata_agent, backtest, chart_tutor, community, discount_agent, fund_agent,
-                    fundamental_agent, news_agent, portfolio_agent, recommend_agent, scoring,
-                    screener, stock_search, strategy_agent, technical_agent, track_record,
-                    us_data, us_fundamental, us_screener)
+                    fundamental_agent, news_agent, portfolio_agent, recommend_agent, regime,
+                    scoring, screener, stock_search, strategy_agent, technical_agent,
+                    track_record, us_data, us_fundamental, us_screener)
 
 st.set_page_config(
     page_title="K-TradingAgents | 한국 주식 멀티 에이전트 분석",
@@ -402,6 +402,21 @@ def score_color(score: int) -> str:
     if score >= 25:
         return "gray"
     return DOWN_COLOR
+
+
+def render_regime_banner(market: str) -> None:
+    """시장 레짐 배너 (B2) — 하루 1회 계산 후 세션 캐시."""
+    ss.setdefault("regime_cache", {})
+    r = ss.regime_cache.get(market)
+    _today = str(pd.Timestamp.now().date())
+    if not r or r.get("asof") != _today:
+        try:
+            r = regime.analyze(market)
+            ss.regime_cache[market] = r
+        except Exception:
+            return
+    _ic = {"순풍": "🟢", "중립": "🟡", "역풍": "🔴"}.get(r["trend"], "⚪")
+    st.info(f"{_ic} **시장 레짐** — {regime.summary_line(r)}\n\n🧭 {r['advice']}")
 
 
 def render_chart_tutor(df_enriched, unit: str = "원") -> None:
@@ -1092,6 +1107,7 @@ elif ss.market == "US" and mode == MODE_SCREEN:
         "S&P500 전 종목을 yfinance로 일괄 수신 → 거래대금($) 상위 필터 → 기술점수(MA·RSI·MACD·볼린저·거래량) 랭킹. "
         "점수 엔진은 K-Trading과 동일합니다."
     )
+    render_regime_banner("US")
 
     if us_scan_btn:
         ss.us_screener = None
@@ -1215,6 +1231,7 @@ elif mode == MODE_DETAIL:
 elif mode == MODE_SCREEN:
     st.title("🏆 오늘의 후보 종목")
     st.caption("1단계: 거래대금 상위 종목 근사 기술 점수 → 2단계: 상위 종목 뉴스+펀더멘탈 풀 분석 → 합산 점수 랭킹")
+    render_regime_banner("KR")
 
     if scan_btn:
         with st.status("전 시장 스캔 중...", expanded=True) as status:
@@ -1451,9 +1468,10 @@ elif mode == MODE_PORTFOLIO:
     _runit = "$" if _rmkt == "US" else "원"
     with st.expander(f"✨ 추천 포트폴리오 만들기 — {'🇺🇸 S&P500' if _rmkt == 'US' else '🇰🇷 국장'} 스크리너 기반"):
         st.caption(
-            "스크리너 기술점수 상위 종목으로 비중·수량까지 계산해 드립니다. "
+            "멀티팩터 랭킹(IC 검증 통과 팩터만 편입) + 상관 분산으로 종목·비중·수량까지 계산합니다. "
             "모의투자 계좌로 저장하면 손절선·목표가·신호가 자동 추적되고, 같은 표로 실전 매수도 따라할 수 있어요."
         )
+        render_regime_banner(_rmkt)
         rc1, rc2, rc3 = st.columns(3)
         reco_n = rc1.slider("종목 수", 5, 15, 10, key="reco_n")
         reco_w_label = rc2.selectbox("비중 방식", list(fund_agent.WEIGHT_LABELS.values()), key="reco_w")
@@ -1502,10 +1520,12 @@ elif mode == MODE_PORTFOLIO:
                 f"{fund_agent.WEIGHT_LABELS.get(_reco['weighting'], _reco['weighting'])}"
             )
             if _fw:
+                _cs = _reco.get("corr_skipped") or []
                 st.caption(
                     f"🧠 멀티팩터 랭킹 — 적용 가중치: {_fw_txt} · "
-                    f"최근 1년 IC(예측력)가 양수인 팩터만 자동 편입, 유니버스 {_reco.get('n_ranked', '?')}종목 채점 · "
-                    "⚠️ 투자 권유가 아닙니다."
+                    f"최근 1년 IC(예측력)가 양수인 팩터만 자동 편입, 유니버스 {_reco.get('n_ranked', '?')}종목 채점"
+                    + (f" · 🔗 상관 분산: 동행 클러스터 초과로 {len(_cs)}종목 제외" if _cs else " · 🔗 상관 분산 적용")
+                    + " · ⚠️ 투자 권유가 아닙니다."
                 )
             _rname_default = f"모의-{'US' if _rmkt == 'US' else 'K'}-{_reco['run_date'][5:].replace('-', '')}"
             sv1, sv2 = st.columns([2, 1.4])

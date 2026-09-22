@@ -94,6 +94,20 @@ def screener_section(track_rows: list) -> str:
     return "\n".join(lines)
 
 
+def regime_section() -> str:
+    """양 시장 레짐 판정 + 전략 조언."""
+    from agents import regime
+    lines = ["*🧭 시장 레짐*"]
+    for mkt, flag in (("KR", "🇰🇷"), ("US", "🇺🇸")):
+        try:
+            r = regime.analyze(mkt)
+            lines.append(f"  {flag} {regime.summary_line(r)}")
+            lines.append(f"     → {r['advice']}")
+        except Exception as e:
+            lines.append(f"  {flag} 판정 실패: {e}")
+    return "\n".join(lines)
+
+
 def save_track(track_rows: list) -> bool:
     """트랙레코드 시트에 오늘의 top 종목 기록."""
     if not track_rows:
@@ -124,13 +138,14 @@ def main() -> None:
         return
 
     track_rows: list = []
+    rg_text = regime_section()
     pf_text, n_alerts = portfolio_section(dry=args.dry)
     sc_text = screener_section(track_rows)
 
     head = f"📈 *TradingAgents 브리핑* — {now.strftime('%m/%d %a')}"
     if n_alerts:
         head += f"\n⚠️ *신호 {n_alerts}건 발생 — 포트폴리오 확인 필요*"
-    msg = "\n\n".join(x for x in [head, pf_text, sc_text] if x.strip())
+    msg = "\n\n".join(x for x in [head, rg_text, pf_text, sc_text] if x.strip())
 
     if args.dry:
         print(msg)
