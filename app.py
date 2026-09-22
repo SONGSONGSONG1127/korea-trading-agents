@@ -1490,11 +1490,23 @@ elif mode == MODE_PORTFOLIO:
                 "금액":   _rfmt(r["amount"]),
             } for r in _reco["rows"]]
             st.dataframe(pd.DataFrame(reco_tbl), hide_index=True, use_container_width=True)
+            _fw = _reco.get("factor_weights", {})
+            _fic = _reco.get("factor_ics", {})
+            _fnames = {"tech": "기술점수", "lowvol": "저변동성", "resmom": "잔차모멘텀"}
+            _fw_txt = " · ".join(
+                f"{_fnames[f]} {_fw.get(f, 0):.0%} (IC {_fic.get(f, 0):+.3f})"
+                for f in ("tech", "lowvol", "resmom")
+            )
             st.caption(
                 f"{_reco['run_date']} 기준 · 투자 {_rfmt(_reco['invested'])} + 현금 {_rfmt(_reco['cash'])} · "
-                f"{fund_agent.WEIGHT_LABELS.get(_reco['weighting'], _reco['weighting'])} · "
-                "⚠️ 기술점수 기반 후보이며 투자 권유가 아닙니다."
+                f"{fund_agent.WEIGHT_LABELS.get(_reco['weighting'], _reco['weighting'])}"
             )
+            if _fw:
+                st.caption(
+                    f"🧠 멀티팩터 랭킹 — 적용 가중치: {_fw_txt} · "
+                    f"최근 1년 IC(예측력)가 양수인 팩터만 자동 편입, 유니버스 {_reco.get('n_ranked', '?')}종목 채점 · "
+                    "⚠️ 투자 권유가 아닙니다."
+                )
             _rname_default = f"모의-{'US' if _rmkt == 'US' else 'K'}-{_reco['run_date'][5:].replace('-', '')}"
             sv1, sv2 = st.columns([2, 1.4])
             reco_name = sv1.text_input("모의투자 계좌명", value=_rname_default, key="reco_name")
