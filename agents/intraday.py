@@ -56,7 +56,9 @@ def run(dry: bool = False) -> tuple[str, int]:
 
     try:
         ws = _alert_ws()
-        sent = {(str(r.get("날짜")), str(r.get("계좌")), str(r.get("코드")), str(r.get("신호")))
+        # 시트가 코드를 숫자로 저장(010120→10120)하므로 _norm_code로 양쪽 정규화
+        sent = {(str(r.get("날짜")), str(r.get("계좌")),
+                 portfolio_agent._norm_code(str(r.get("코드"))), str(r.get("신호")))
                 for r in ws.get_all_records()}
     except Exception as e:
         return f"(장중알림 시트 실패: {e})", 0
