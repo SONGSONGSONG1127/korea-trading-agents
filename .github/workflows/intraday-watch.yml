@@ -1,0 +1,35 @@
+name: intraday-watch
+
+on:
+  schedule:
+    - cron: "0,30 0-6 * * 1-5"    # KR 장중 09:00~15:30 KST, 30분 간격
+    - cron: "30 14-20 * * 1-5"    # US 장중 (EDT 10:30~16:30 / EST 09:30~15:30), 1시간 간격
+  workflow_dispatch: {}
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Write secrets.toml
+        env:
+          STREAMLIT_SECRETS: ${{ secrets.STREAMLIT_SECRETS }}
+        run: |
+          mkdir -p .streamlit
+          printf '%s' "$STREAMLIT_SECRETS" > .streamlit/secrets.toml
+
+      - name: Run intraday watch
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/intraday_watch.py

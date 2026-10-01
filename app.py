@@ -182,6 +182,7 @@ with st.sidebar:
 
     mode = st.radio("모드", [MODE_DETAIL, MODE_SCREEN, MODE_PORTFOLIO, MODE_BACKDATA,
                             MODE_FUND, MODE_DISCOUNT, MODE_TRACK], key="mode")
+    st.caption("💡 투자금만 넣으면 종목·수량 자동 구성 → 💼 포트폴리오 → ✨ 추천 만들기")
     # 수동 모드 전환 시 '돌아가기' 목적지 무효화 (버튼 점프 직후 rerun은 예외)
     if ss.pop("_nav_jump", False):
         pass
@@ -1466,7 +1467,11 @@ elif mode == MODE_PORTFOLIO:
     ss.setdefault("reco", None)
     _rmkt = ss.market
     _runit = "$" if _rmkt == "US" else "원"
-    with st.expander(f"✨ 추천 포트폴리오 만들기 — {'🇺🇸 S&P500' if _rmkt == 'US' else '🇰🇷 국장'} 스크리너 기반"):
+    with st.expander(
+        f"✨ 추천 포트폴리오 만들기 — 투자금만 넣으면 종목·비중·수량까지 "
+        f"({'🇺🇸 S&P500' if _rmkt == 'US' else '🇰🇷 국장'})",
+        expanded=ss.get("reco") is None,
+    ):
         st.caption(
             "멀티팩터 랭킹(IC 검증 통과 팩터만 편입) + 상관 분산으로 종목·비중·수량까지 계산합니다. "
             "모의투자 계좌로 저장하면 손절선·목표가·신호가 자동 추적되고, 같은 표로 실전 매수도 따라할 수 있어요."
@@ -1567,6 +1572,8 @@ elif mode == MODE_PORTFOLIO:
                             n_stocks=len([r for r in _reco["rows"] if r["qty"] > 0]),
                             rebalance_days=20, weighting=_reco["weighting"],
                             start_date=_reco["run_date"],
+                            capital=float(_reco["capital"]),
+                            cash=float(_reco["cash"]),
                         )
                     ss.pf_selected = reco_name
                     _msg = (f"✅ 펀드 '{reco_name}' 개시 — {_n_saved}종목, 4주 주기 자동 리밸런싱이 "
@@ -1628,6 +1635,47 @@ elif mode == MODE_PORTFOLIO:
 
     st.caption(f"손절선 = 매수가 − 1.5×ATR  |  1차 목표 = 매수가 + 2.0×ATR  |  2차 목표 = 매수가 + 3.0×ATR")
     st.divider()
+
+    # ── 🏦 펀드 기준가 (라이브 펀드 계좌만) ──────────────────────────────
+    if selected_pf.startswith("펀드"):
+        try:
+            _fcfg = next((c for c in live_fund.load_configs()
+                          if str(c.get("계좌")) == selected_pf), None)
+        except Exception:
+            _fcfg = None
+        if _fcfg:
+            with st.expander("🏦 펀드 기준가 — 일별 NAV 추이", expanded=True):
+                def _fnum(v):
+                    try:
+                        return float(v or 0)
+                    except (TypeError, ValueError):
+                        return 0.0
+                _navs = live_fund.load_nav(selected_pf)
+                _fcap = _fnum(_fcfg.get("초기자본"))
+                if _navs:
+                    _last = _navs[-1]
+                    _unit = _fnum(_last.get("기준가"))
+                    n1, n2, n3, n4 = st.columns(4)
+                    n1.metric("기준가", f"{_unit:,.1f}" if _unit else "—",
+                              f"{(_unit / 1000 - 1) * 100:+.2f}%" if _unit else None,
+                              delta_color="normal" if _unit >= 1000 else "inverse")
+                    n2.metric("NAV", f"{_fnum(_last.get('NAV')):,.0f}")
+                    n3.metric("주식 평가액", f"{_fnum(_last.get('평가액')):,.0f}")
+                    n4.metric("현금", f"{_fnum(_last.get('현금')):,.0f}")
+                    _ndf = pd.DataFrame(_navs)
+                    _ndf["기준가"] = pd.to_numeric(_ndf["기준가"], errors="coerce")
+                    _ndf = _ndf.dropna(subset=["기준가"])
+                    if len(_ndf) >= 2:
+                        st.line_chart(_ndf.set_index("날짜")["기준가"])
+                    st.caption(
+                        f"설정일 1,000 기준 · 초기자본 {_fcap:,.0f} · "
+                        f"매일 아침 브리핑이 자동 기록 ({_last.get('날짜')} 기준 {len(_navs)}일)"
+                    )
+                else:
+                    st.caption(
+                        f"초기자본 {_fcap:,.0f} · 현금 {_fnum(_fcfg.get('현금')):,.0f} — "
+                        "첫 기준가는 다음 아침 브리핑부터 기록됩니다."
+                    )
 
     # ── 포지션 로드 ─────────────────────────────────────────────────────
     try:

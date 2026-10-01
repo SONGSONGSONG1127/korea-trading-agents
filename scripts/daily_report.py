@@ -49,6 +49,13 @@ def portfolio_section(dry: bool = False) -> tuple[str, int]:
                     else:
                         try:
                             t = portfolio_agent.close_position(s, portfolio=pf)
+                            if pf.startswith("펀드"):
+                                # 매도 대금은 펀드 현금으로 보존 (NAV·리밸 예산에 반영)
+                                try:
+                                    from agents import live_fund
+                                    live_fund.add_cash(pf, t["sell_px"] * s.quantity)
+                                except Exception:
+                                    pass
                             lines.append(f"  🤖 자동 {t['signal']} 집행: {t['name']} "
                                          f"→ 손익 {t['ret']:+.1f}% ({s.signal_reason})")
                         except Exception as e:
@@ -149,12 +156,19 @@ def main() -> None:
         fund_lines = [f"(펀드 리밸런싱 실패: {e})"]
     fund_text = "\n".join(fund_lines)
 
+    # 펀드 기준가(NAV) 일별 기록 — 신호 집행·리밸런싱 반영 후 스냅샷
+    try:
+        from agents import live_fund as _lf
+        nav_text = "\n".join(_lf.record_navs(dry=args.dry))
+    except Exception as e:
+        nav_text = f"(기준가 기록 실패: {e})"
+
     sc_text = screener_section(track_rows)
 
     head = f"📈 *TradingAgents 브리핑* — {now.strftime('%m/%d %a')}"
     if n_alerts:
         head += f"\n⚠️ *신호 {n_alerts}건 발생 — 포트폴리오 확인 필요*"
-    msg = "\n\n".join(x for x in [head, rg_text, pf_text, fund_text, sc_text] if x.strip())
+    msg = "\n\n".join(x for x in [head, rg_text, pf_text, fund_text, nav_text, sc_text] if x.strip())
 
     if args.dry:
         print(msg)

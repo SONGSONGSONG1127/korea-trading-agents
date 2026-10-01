@@ -9,3 +9,4 @@ gspread>=6.0.0
 google-auth>=2.29.0
 
 yfinance>=0.2.50
+tzdata>=2024.1
