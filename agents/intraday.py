@@ -18,6 +18,7 @@ ALERT_SHEET = "_장중알림"
 ALERT_HEADER = ["날짜", "시각", "계좌", "코드", "종목", "신호", "현재가"]
 
 _WATCH_SIGNALS = ("손절", "익절")
+_CRASH_PCT = -2.0   # 지수 급락 알림 임계 (전일 종가 대비)
 
 
 def market_open(market: str) -> bool:
@@ -45,6 +46,45 @@ def _alert_ws():
         ws = sh.add_worksheet(title=ALERT_SHEET, rows=2000, cols=8)
         ws.update(values=[ALERT_HEADER], range_name="A1")
     return ws
+
+
+def _crash_lines(today: str, sent: set, rows: list) -> list[str]:
+    """지수가 전일 대비 _CRASH_PCT 이하로 밀리면 시황 헤드라인과 함께 1회 알림."""
+    from . import market_brief
+
+    lines: list[str] = []
+    for market in ("KR", "US"):
+        if not market_open(market):
+            continue
+        try:
+            moves = market_brief.index_moves(market)
+        except Exception:
+            continue
+        hit = [m for m in moves if m["chg_pct"] <= _CRASH_PCT]
+        if not hit:
+            continue
+        name = hit[0]["name"]
+        key = (today, "시장", name, "지수급락")
+        if key in sent:
+            continue
+        sent.add(key)
+        rows.append([today, datetime.now(ZoneInfo("Asia/Seoul")).strftime("%H:%M"),
+                     "시장", name, name, "지수급락", hit[0]["close"]])
+        idx_txt = " · ".join(f"{m['name']} {m['chg_pct']:+.2f}%" for m in moves)
+        lines.append(f"📉 *지수 급락* — {idx_txt}")
+        if market == "KR":
+            try:
+                arts = market_brief.fetch_mainnews(4)
+                kw = market_brief.keywords(arts)
+                if kw:
+                    lines.append(f"   🏷️ 이슈: {' · '.join(kw)}")
+                for a in arts[:3]:
+                    lines.append(f"   · [{a['title']}]({a['url']})")
+                if arts:
+                    lines.append(f"   _{arts[0]['lead'][:150]}_")
+            except Exception:
+                pass
+    return lines
 
 
 def run(dry: bool = False) -> tuple[str, int]:
@@ -87,6 +127,12 @@ def run(dry: bool = False) -> tuple[str, int]:
                 lines.append(f"🚨 [{pf}] *{sig.signal}*: {sig.name} — {sig.signal_reason}")
     except Exception as e:
         return f"(장중 점검 실패: {e})", 0
+
+    # 지수 급락 감지 (시황 헤드라인 포함)
+    try:
+        lines = _crash_lines(today, sent, rows) + lines
+    except Exception:
+        pass
 
     if not lines:
         print(f"장중 점검 {n_checked}포지션 — 신규 경보 없음")

@@ -146,6 +146,14 @@ def main() -> None:
 
     track_rows: list = []
     rg_text = regime_section()
+
+    # 시황: 지수 등락 + 주요뉴스 헤드라인 + 이슈 키워드 (하락/상승 이유)
+    try:
+        from agents import market_brief
+        mb_text = market_brief.telegram_section()
+    except Exception as e:
+        mb_text = f"(시황 수집 실패: {e})"
+
     pf_text, n_alerts = portfolio_section(dry=args.dry)
 
     # 라이브 펀드 리밸런싱 (주기 도래 시에만 실행됨)
@@ -168,7 +176,7 @@ def main() -> None:
     head = f"📈 *TradingAgents 브리핑* — {now.strftime('%m/%d %a')}"
     if n_alerts:
         head += f"\n⚠️ *신호 {n_alerts}건 발생 — 포트폴리오 확인 필요*"
-    msg = "\n\n".join(x for x in [head, rg_text, pf_text, fund_text, nav_text, sc_text] if x.strip())
+    msg = "\n\n".join(x for x in [head, rg_text, mb_text, pf_text, fund_text, nav_text, sc_text] if x.strip())
 
     if args.dry:
         print(msg)

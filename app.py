@@ -14,9 +14,9 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from agents import (backdata_agent, backtest, chart_tutor, community, discount_agent, fund_agent,
-                    fundamental_agent, live_fund, news_agent, portfolio_agent, recommend_agent,
-                    regime, scoring, screener, stock_search, strategy_agent, technical_agent,
-                    track_record, us_data, us_fundamental, us_screener)
+                    fundamental_agent, live_fund, market_brief, news_agent, portfolio_agent,
+                    recommend_agent, regime, scoring, screener, stock_search, strategy_agent,
+                    technical_agent, track_record, us_data, us_fundamental, us_screener)
 
 st.set_page_config(
     page_title="K-TradingAgents | 한국 주식 멀티 에이전트 분석",
@@ -420,6 +420,76 @@ def render_regime_banner(market: str) -> None:
     st.info(f"{_ic} **시장 레짐** — {regime.summary_line(r)}\n\n🧭 {r['advice']}")
 
 
+def render_market_brief(market: str) -> None:
+    """메인 시황 카드 — 지수 등락 + 주요뉴스 헤드라인 + 이슈 키워드 (30분 캐시)."""
+    ss.setdefault("mkt_brief", {})
+    _now = pd.Timestamp.now()
+    cached = ss.mkt_brief.get(market)
+    if cached and (_now - cached[0]).total_seconds() < 1800:
+        b = cached[1]
+    else:
+        try:
+            b = market_brief.build(market, n_news=6)
+            ss.mkt_brief[market] = (_now, b)
+        except Exception:
+            return
+    if not b["indices"] and not b["articles"]:
+        return
+    _worst = min((i["chg_pct"] for i in b["indices"]), default=0.0)
+    with st.expander(f"📰 오늘의 시황 — {b['asof']} 기준", expanded=_worst <= -1.0):
+        if b["indices"]:
+            cols = st.columns(max(len(b["indices"]), 2))
+            for c, i in zip(cols, b["indices"]):
+                c.metric(i["name"], f"{i['close']:,.2f}", f"{i['chg_pct']:+.2f}%")
+        if b["keywords"]:
+            st.markdown("🏷️ **이슈 키워드**: " + " · ".join(f"`{k}`" for k in b["keywords"]))
+        if b["articles"]:
+            st.caption(f"💬 {b['articles'][0]['lead'][:200]}")
+            for a in b["articles"][:5]:
+                _meta = " · ".join(x for x in (a["press"], a["time"]) if x)
+                st.markdown(f"- [{a['title']}]({a['url']}) <span style='color:gray; font-size:0.8rem'>{_meta}</span>",
+                            unsafe_allow_html=True)
+
+
+def render_share(key: str, title: str, caption: str,
+                 sections: list, fig) -> None:
+    """공유 블록 — 텔레그램 전송(차트 사진+PDF) / PDF 다운로드."""
+    with st.expander("📤 공유 — 텔레그램 전송 · PDF 저장"):
+        st.caption("텔레그램으로 받은 메시지·PDF를 전달(Forward)하면 그대로 공유됩니다.")
+
+        def _make(need_pdf: bool):
+            from agents import report
+            png = report.fig_png(fig)
+            pdf = report.build_pdf(title, caption.replace("\n", " · "),
+                                   sections, png) if need_pdf else None
+            return png, pdf
+
+        c1, c2 = st.columns(2)
+        if c1.button("📨 텔레그램으로 보내기", key=f"sh_tg_{key}", use_container_width=True):
+            with st.spinner("차트 렌더링·전송 중... (10~20초)"):
+                try:
+                    from agents import report
+                    png, pdf = _make(need_pdf=True)
+                    ok_p, ok_d = report.send_report(caption, png, pdf, f"{title}.pdf")
+                    if ok_p or ok_d:
+                        st.success(f"✅ 전송 완료 (차트 {'○' if ok_p else '×'} · PDF {'○' if ok_d else '×'})")
+                    else:
+                        st.error("전송 실패 — 텔레그램 토큰/챗ID 설정을 확인해 주세요.")
+                except Exception as e:
+                    st.error(f"전송 실패: {e}")
+        if c2.button("📄 PDF 만들기", key=f"sh_mk_{key}", use_container_width=True):
+            with st.spinner("PDF 생성 중..."):
+                try:
+                    _, pdf = _make(need_pdf=True)
+                    ss[f"sh_pdf_{key}"] = pdf
+                except Exception as e:
+                    st.error(f"PDF 생성 실패: {e}")
+        if ss.get(f"sh_pdf_{key}"):
+            st.download_button("⬇️ PDF 다운로드", data=ss[f"sh_pdf_{key}"],
+                               file_name=f"{title}.pdf", mime="application/pdf",
+                               key=f"sh_dl_{key}", use_container_width=True)
+
+
 def render_chart_tutor(df_enriched, unit: str = "원") -> None:
     """차트 아래에 붙는 해석 + 공부 콘텐츠 (국장·미장 공통)."""
     try:
@@ -819,6 +889,45 @@ def render_analysis(news, tech, fund, strat, comm=None):
     else:
         st.caption("커뮤니티 데이터를 가져오지 못했습니다.")
 
+    # ── 📤 공유 (텔레그램 · PDF) ───────────────────────────────────────
+    _cap = (f"📑 {news.stock_name}({news.code}) 분석 — {pd.Timestamp.now().date()}\n"
+            f"현재가 {tech.price:,.0f}원 ({change_pct:+.2f}%) · 합산 {strat.combined_score}점 — {strat.opinion}\n"
+            f"매수 {strat.buy_price:,.0f} / 손절 {strat.stop_loss:,.0f} / "
+            f"목표 {strat.target_price:,.0f}~{strat.target2_price:,.0f}\n"
+            f"기술 {strat.score100} · 펀더멘탈 {strat.fund_score} · ⚠️ 투자 권유가 아닙니다")
+    _secs = [
+        ("요약", [
+            f"현재가 {tech.price:,.0f}원 ({change_pct:+.2f}%) · RSI {tech.rsi:.1f} · ATR {tech.atr:,.0f}원 ({tech.atr_pct:.1%})",
+            f"합산 점수 {strat.combined_score}/100 (기술 {strat.score100} · 펀더멘탈 {strat.fund_score}) — 참고 의견: {strat.opinion}",
+            f"매수 희망가 {strat.buy_price:,.0f}원 / 손절 {strat.stop_loss:,.0f}원 / "
+            f"1차 목표 {strat.target_price:,.0f}원 / 2차 목표 {strat.target2_price:,.0f}원",
+            f"진입 근거: {strat.entry_basis}",
+            f"손절 근거: {strat.stop_basis}",
+        ]),
+        ("최종 전략", [
+            f"[{k}] {strat.sections.get(k, '').replace(chr(10) * 2, ' / ')}"
+            for k in ("결론", "주도 근거", "상충 신호", "무효화 조건") if strat.sections.get(k)
+        ]),
+    ]
+    if fund is not None and not fund.error:
+        _fl = [f"펀더멘탈 {fund.fund_score}/100 ({fund.fund_grade}) — "
+               f"밸류 {fund.valuation_score}/50 · 품질 {fund.quality_score}/30 · 성장 {fund.income_score}/20"]
+        _chip = []
+        if fund.per is not None:
+            _chip.append(f"PER {fund.per:.1f}배" + (f" (업종 {fund.sector_per:.1f}배)" if fund.sector_per else ""))
+        if fund.pbr is not None:
+            _chip.append(f"PBR {fund.pbr:.2f}배")
+        if fund.roe is not None:
+            _chip.append(f"ROE {fund.roe:.1f}%")
+        if _chip:
+            _fl.append(" · ".join(_chip))
+        if getattr(fund, "summary", ""):
+            _fl.append(str(fund.summary))
+        _secs.append(("펀더멘탈", _fl))
+    if news.summary:
+        _secs.append(("뉴스 요약", [news.summary]))
+    render_share(f"kr_{news.code}", f"{news.stock_name}({news.code}) 분석", _cap, _secs, fig)
+
 
 def render_disclaimer():
     st.markdown(
@@ -844,6 +953,7 @@ elif ss.market == "US" and mode == MODE_DETAIL:
         st.button(f"← {ss['nav_from']} 결과로 돌아가기", on_click=nav_go_back)
     st.title("🇺🇸 미국 종목 분석")
     st.caption("차트 · 기술 지표 · 멀티기간 백테스트 · 기업 정보 (뉴스·펀더멘탈 점수는 v2)")
+    render_market_brief("US")
 
     _target = None
     _p = ss.pop("us_pending", None)
@@ -1099,6 +1209,27 @@ elif ss.market == "US" and mode == MODE_DETAIL:
         if info["summary"]:
             with st.expander("🏢 사업 요약 (영문)"):
                 st.write(info["summary"])
+
+        # ── 📤 공유 (텔레그램 · PDF) ──────────────────────────────────
+        _ucap = (f"📑 {info['name']}({_tk}) 분석 — {r['run_date']}\n"
+                 f"현재가 ${_close:,.2f} ({_chg:+.2f}%) · 기술점수 {r['score'] * 100:+.0f}\n"
+                 + (f"펀더멘탈 {_f['score']}/100 ({_f['grade']})\n" if _f else "")
+                 + "⚠️ 투자 권유가 아닙니다")
+        _usum = [f"{_sec} · {info['industry'] or '—'}",
+                 f"현재가 ${_close:,.2f} ({_chg:+.2f}%) · 기술점수 {r['score'] * 100:+.0f} · RSI {ind['rsi']:.1f}"]
+        if info["market_cap"]:
+            _usum.append(f"시총 ${info['market_cap'] / 1e9:,.0f}B"
+                         + (f" · PER {info['per']:.1f}" if info["per"] else ""))
+        _usecs = [("요약", _usum)]
+        if r.get("wiki"):
+            _usecs.append(("어떤 기업?", [re.sub(r"<[^>]+>", "", str(r["wiki"]))]))
+        if _f:
+            _ul = [f"펀더멘탈 {_f['score']}/100 ({_f['grade']}) — 밸류 {_f['val_score']}/35 · "
+                   f"품질 {_f['qual_score']}/35 · 성장·주주환원 {_f['growth_score']}/30"]
+            if _f.get("narrative"):
+                _ul.append(str(_f["narrative"]))
+            _usecs.append(("펀더멘탈", _ul))
+        render_share(f"us_{_tk}", f"{info['name']}({_tk}) 분석", _ucap, _usecs, fig_us)
     else:
         st.info("왼쪽 사이드바에 티커를 입력하고 **분석 실행**을 누르거나, 스크리너에서 → 버튼으로 이동하세요.")
 
@@ -1176,6 +1307,7 @@ elif mode == MODE_DETAIL:
         st.button(f"← {ss['nav_from']} 결과로 돌아가기", on_click=nav_go_back)
     st.title("한국 주식 멀티 에이전트 분석")
     st.caption("Agent 1 (뉴스/공시) → Agent 2 (기술 4축) → Agent 3 (펀더멘탈) → Agent 4 (전략 종합)")
+    render_market_brief("KR")
 
     target, force = None, False
     if run_btn:
