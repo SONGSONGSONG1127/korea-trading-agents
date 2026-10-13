@@ -452,7 +452,7 @@ def render_market_brief(market: str) -> None:
 
 
 def render_share(key: str, title: str, caption: str,
-                 sections: list, fig) -> None:
+                 sections: list, fig, meta: dict | None = None) -> None:
     """공유 블록 — 텔레그램 전송(차트 사진+PDF) / PDF 다운로드."""
     with st.expander("📤 공유 — 텔레그램 전송 · PDF 저장"):
         st.caption("텔레그램으로 받은 메시지·PDF를 전달(Forward)하면 그대로 공유됩니다.")
@@ -460,8 +460,9 @@ def render_share(key: str, title: str, caption: str,
         def _make(need_pdf: bool):
             from agents import report
             png = report.fig_png(fig)
-            pdf = report.build_pdf(title, caption.replace("\n", " · "),
-                                   sections, png) if need_pdf else None
+            _sub = f"{pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')} 기준 · TradingAgents 멀티 에이전트 자동 분석"
+            pdf = report.build_pdf(title, _sub, sections, png,
+                                   meta=meta) if need_pdf else None
             return png, pdf
 
         c1, c2 = st.columns(2)
@@ -895,38 +896,55 @@ def render_analysis(news, tech, fund, strat, comm=None):
             f"매수 {strat.buy_price:,.0f} / 손절 {strat.stop_loss:,.0f} / "
             f"목표 {strat.target_price:,.0f}~{strat.target2_price:,.0f}\n"
             f"기술 {strat.score100} · 펀더멘탈 {strat.fund_score} · ⚠️ 투자 권유가 아닙니다")
+    _opc = score_color(strat.combined_score)
+    _chgc = UP_COLOR if change_pct >= 0 else DOWN_COLOR
+    _meta = {
+        "metrics": [
+            ("현재가", f"{tech.price:,.0f}원", f"{change_pct:+.2f}%", _chgc),
+            ("합산 점수", f"{strat.combined_score} / 100", "기술60·펀더40", _opc),
+            ("기술 점수", f"{strat.score100}점", strat.grade, None),
+            ("펀더멘탈", f"{strat.fund_score}점", strat.fund_grade, None),
+            ("RSI (14)", f"{tech.rsi:.1f}", None, None),
+            ("ATR", f"{tech.atr:,.0f}원", f"{tech.atr_pct:.1%} 진폭", None),
+        ],
+        "opinion": (strat.opinion, _opc),
+        "prices": [
+            ("매수 희망가", f"{strat.buy_price:,.0f}원", None, "#f9a825"),
+            ("손절가", f"{strat.stop_loss:,.0f}원",
+             f"{(strat.stop_loss / strat.buy_price - 1) * 100:.1f}%", DOWN_COLOR),
+            ("1차 목표", f"{strat.target_price:,.0f}원",
+             f"{(strat.target_price / strat.buy_price - 1) * 100:+.1f}%", UP_COLOR),
+            ("2차 목표", f"{strat.target2_price:,.0f}원",
+             f"{(strat.target2_price / strat.buy_price - 1) * 100:+.1f}%", UP_COLOR),
+        ],
+    }
+    if fund is not None and not fund.error:
+        _chips = []
+        if fund.per is not None:
+            _pc = UP_COLOR if fund.per < 12 else (DOWN_COLOR if fund.per > 25 else "#f9a825")
+            _chips.append((f"PER {fund.per:.1f}배"
+                           + (f" (업종 {fund.sector_per:.1f}배)" if fund.sector_per else ""), _pc))
+        if fund.pbr is not None:
+            _pc = UP_COLOR if fund.pbr < 1.0 else (DOWN_COLOR if fund.pbr > 3.0 else "#f9a825")
+            _chips.append((f"PBR {fund.pbr:.2f}배", _pc))
+        if fund.roe is not None:
+            _pc = UP_COLOR if fund.roe >= 15 else (DOWN_COLOR if fund.roe < 5 else "#f9a825")
+            _chips.append((f"ROE {fund.roe:.1f}%", _pc))
+        _chips.append((f"펀더멘탈 {fund.fund_score}/100 · {fund.fund_grade}", None))
+        _meta["chips"] = _chips
     _secs = [
-        ("요약", [
-            f"현재가 {tech.price:,.0f}원 ({change_pct:+.2f}%) · RSI {tech.rsi:.1f} · ATR {tech.atr:,.0f}원 ({tech.atr_pct:.1%})",
-            f"합산 점수 {strat.combined_score}/100 (기술 {strat.score100} · 펀더멘탈 {strat.fund_score}) — 참고 의견: {strat.opinion}",
-            f"매수 희망가 {strat.buy_price:,.0f}원 / 손절 {strat.stop_loss:,.0f}원 / "
-            f"1차 목표 {strat.target_price:,.0f}원 / 2차 목표 {strat.target2_price:,.0f}원",
-            f"진입 근거: {strat.entry_basis}",
-            f"손절 근거: {strat.stop_basis}",
-        ]),
+        ("매매 근거", [f"진입: {strat.entry_basis}", f"손절: {strat.stop_basis}"]),
         ("최종 전략", [
             f"[{k}] {strat.sections.get(k, '').replace(chr(10) * 2, ' / ')}"
             for k in ("결론", "주도 근거", "상충 신호", "무효화 조건") if strat.sections.get(k)
         ]),
     ]
-    if fund is not None and not fund.error:
-        _fl = [f"펀더멘탈 {fund.fund_score}/100 ({fund.fund_grade}) — "
-               f"밸류 {fund.valuation_score}/50 · 품질 {fund.quality_score}/30 · 성장 {fund.income_score}/20"]
-        _chip = []
-        if fund.per is not None:
-            _chip.append(f"PER {fund.per:.1f}배" + (f" (업종 {fund.sector_per:.1f}배)" if fund.sector_per else ""))
-        if fund.pbr is not None:
-            _chip.append(f"PBR {fund.pbr:.2f}배")
-        if fund.roe is not None:
-            _chip.append(f"ROE {fund.roe:.1f}%")
-        if _chip:
-            _fl.append(" · ".join(_chip))
-        if getattr(fund, "summary", ""):
-            _fl.append(str(fund.summary))
-        _secs.append(("펀더멘탈", _fl))
+    if fund is not None and not fund.error and getattr(fund, "summary", ""):
+        _secs.append(("펀더멘탈 해석", [str(fund.summary)]))
     if news.summary:
         _secs.append(("뉴스 요약", [news.summary]))
-    render_share(f"kr_{news.code}", f"{news.stock_name}({news.code}) 분석", _cap, _secs, fig)
+    render_share(f"kr_{news.code}", f"{news.stock_name}({news.code}) 분석", _cap, _secs, fig,
+                 meta=_meta)
 
 
 def render_disclaimer():
@@ -1215,21 +1233,46 @@ elif ss.market == "US" and mode == MODE_DETAIL:
                  f"현재가 ${_close:,.2f} ({_chg:+.2f}%) · 기술점수 {r['score'] * 100:+.0f}\n"
                  + (f"펀더멘탈 {_f['score']}/100 ({_f['grade']})\n" if _f else "")
                  + "⚠️ 투자 권유가 아닙니다")
-        _usum = [f"{_sec} · {info['industry'] or '—'}",
-                 f"현재가 ${_close:,.2f} ({_chg:+.2f}%) · 기술점수 {r['score'] * 100:+.0f} · RSI {ind['rsi']:.1f}"]
+        _uchgc = UP_COLOR if _chg >= 0 else DOWN_COLOR
+        _usc = r["score"] * 100
+        _uscc = UP_COLOR if _usc >= 30 else ("#f9a825" if _usc >= 0 else DOWN_COLOR)
+        _um = [("현재가", f"${_close:,.2f}", f"{_chg:+.2f}%", _uchgc),
+               ("기술점수", f"{_usc:+.0f}", None, _uscc)]
         if info["market_cap"]:
-            _usum.append(f"시총 ${info['market_cap'] / 1e9:,.0f}B"
-                         + (f" · PER {info['per']:.1f}" if info["per"] else ""))
-        _usecs = [("요약", _usum)]
-        if r.get("wiki"):
-            _usecs.append(("어떤 기업?", [re.sub(r"<[^>]+>", "", str(r["wiki"]))]))
+            _um.append(("시총", f"${info['market_cap'] / 1e9:,.0f}B", None, None))
+        if info["per"]:
+            _um.append(("PER", f"{info['per']:.1f}", None, None))
+        if info["hi52"] and info["lo52"] and info["hi52"] > info["lo52"]:
+            _um.append(("52주 위치", f"{(_close - info['lo52']) / (info['hi52'] - info['lo52']):.0%}",
+                        None, None))
+        if info["div_yield"]:
+            _um.append(("배당", f"{info['div_yield']:.2f}%", None, None))
+        _umeta = {"metrics": _um[:6]}
         if _f:
-            _ul = [f"펀더멘탈 {_f['score']}/100 ({_f['grade']}) — 밸류 {_f['val_score']}/35 · "
-                   f"품질 {_f['qual_score']}/35 · 성장·주주환원 {_f['growth_score']}/30"]
-            if _f.get("narrative"):
-                _ul.append(str(_f["narrative"]))
-            _usecs.append(("펀더멘탈", _ul))
-        render_share(f"us_{_tk}", f"{info['name']}({_tk}) 분석", _ucap, _usecs, fig_us)
+            _ugc = UP_COLOR if _f["score"] >= 60 else ("#f9a825" if _f["score"] >= 45 else DOWN_COLOR)
+            _umeta["opinion"] = (f"펀더멘탈 {_f['score']}/100 · {_f['grade']}", _ugc)
+            _uchips = []
+            if _f.get("fwd_pe"):
+                _uchips.append((f"fwd PER {_f['fwd_pe']:.1f}배", None))
+            if _f.get("ev_ebitda"):
+                _uchips.append((f"EV/EBITDA {_f['ev_ebitda']:.1f}", None))
+            if _f.get("fcf_yield") is not None:
+                _uchips.append((f"FCF수익률 {_f['fcf_yield']:.1f}%", None))
+            if _f.get("roe") is not None:
+                _uchips.append((f"ROE {_f['roe']:.0f}%", None))
+            if _f.get("rev_g") is not None:
+                _uchips.append((f"매출성장 {_f['rev_g']:+.0f}%", None))
+            if _f.get("sh_yield") is not None:
+                _uchips.append((f"주주환원 {_f['sh_yield']:.1f}%", None))
+            if _uchips:
+                _umeta["chips"] = _uchips
+        _usecs = [("기업 개요", [f"{_sec} · {info['industry'] or '—'}"])]
+        if r.get("wiki"):
+            _usecs[0][1].append(re.sub(r"<[^>]+>", "", str(r["wiki"])))
+        if _f and _f.get("narrative"):
+            _usecs.append(("펀더멘탈 해석", [str(_f["narrative"])]))
+        render_share(f"us_{_tk}", f"{info['name']}({_tk}) 분석", _ucap, _usecs, fig_us,
+                     meta=_umeta)
     else:
         st.info("왼쪽 사이드바에 티커를 입력하고 **분석 실행**을 누르거나, 스크리너에서 → 버튼으로 이동하세요.")
 
