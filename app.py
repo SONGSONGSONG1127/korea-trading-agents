@@ -922,6 +922,33 @@ def render_analysis(news, tech, fund, strat, comm=None):
     else:
         st.caption("커뮤니티 데이터를 가져오지 못했습니다.")
 
+    # ── 💬 투자 귀재들의 한줄평 + 🔎 심층리서치 프롬프트 ────────────────
+    _krg = ss.get("regime_cache", {}).get("KR") or {}
+    _gctx = {"mode": "scout", "code": news.code, "name": news.stock_name, "market": "KR",
+             "price": tech.price, "combined": strat.combined_score,
+             "score100": strat.score100, "fund_score": strat.fund_score,
+             "score": strat.score100 - 50,   # 0~100 → 대략 -50~+50 스케일
+             "fund_grade": getattr(fund, "fund_grade", None) if fund else None,
+             "per": getattr(fund, "per", None) if fund else None,
+             "sector_per": getattr(fund, "sector_per", None) if fund else None,
+             "pbr": getattr(fund, "pbr", None) if fund else None,
+             "roe": getattr(fund, "roe", None) if fund else None,
+             "regime_trend": _krg.get("trend"), "regime_vol": _krg.get("vol_label"),
+             "news_summary": news.summary, "veto": news.veto}
+    from agents import gurus as _gu
+    with st.expander("💬 투자 귀재들의 한줄평 — 6가지 관점으로 다시 보기"):
+        gc1, gc2 = st.columns(2)
+        for i, g in enumerate(_gu.comments(_gctx)):
+            with (gc1 if i % 2 == 0 else gc2):
+                st.markdown(f"{g['icon']} **{g['guru']}** <span style='color:gray; font-size:0.8rem'>({g['style']})</span>",
+                            unsafe_allow_html=True)
+                st.caption(f"“{g['line']}”")
+        st.caption(_gu.DISCLAIMER)
+    with st.expander("🔎 심층리서치 프롬프트 — 복사해서 Claude/ChatGPT 딥리서치에 붙여넣기"):
+        st.caption("오늘 분석 데이터가 자동으로 채워져 있어요. 코드 블록 오른쪽 위 복사 버튼을 누르세요. "
+                   "딥리서치 결과는 우리 시스템 점수와 교차검증하는 용도로 쓰면 좋습니다.")
+        st.code(_gu.research_prompt(_gctx), language="text")
+
     # ── 📤 공유 (텔레그램 · PDF) ───────────────────────────────────────
     _cap = (f"📑 {news.stock_name}({news.code}) 분석 — {pd.Timestamp.now().date()}\n"
             f"현재가 {tech.price:,.0f}원 ({change_pct:+.2f}%) · 합산 {strat.combined_score}점 — {strat.opinion}\n"
@@ -1260,6 +1287,27 @@ elif ss.market == "US" and mode == MODE_DETAIL:
         if info["summary"]:
             with st.expander("🏢 사업 요약 (영문)"):
                 st.write(info["summary"])
+
+        # ── 💬 투자 귀재들의 한줄평 + 🔎 심층리서치 프롬프트 ──────────
+        _usg = ss.get("regime_cache", {}).get("US") or {}
+        _ugctx = {"mode": "scout", "code": _tk, "name": info["name"], "market": "US",
+                  "price": _close, "score": r["score"] * 100,
+                  "fund_grade": _f["grade"] if _f else None,
+                  "per": _f.get("fwd_pe") if _f else info.get("per"),
+                  "roe": _f.get("roe") if _f else None,
+                  "regime_trend": _usg.get("trend"), "regime_vol": _usg.get("vol_label")}
+        from agents import gurus as _gu
+        with st.expander("💬 투자 귀재들의 한줄평 — 6가지 관점으로 다시 보기"):
+            ugc1, ugc2 = st.columns(2)
+            for i, g in enumerate(_gu.comments(_ugctx)):
+                with (ugc1 if i % 2 == 0 else ugc2):
+                    st.markdown(f"{g['icon']} **{g['guru']}** <span style='color:gray; font-size:0.8rem'>({g['style']})</span>",
+                                unsafe_allow_html=True)
+                    st.caption(f"“{g['line']}”")
+            st.caption(_gu.DISCLAIMER)
+        with st.expander("🔎 심층리서치 프롬프트 — 복사해서 Claude/ChatGPT 딥리서치에 붙여넣기"):
+            st.caption("오늘 분석 데이터가 자동으로 채워져 있어요. 코드 블록 오른쪽 위 복사 버튼을 누르세요.")
+            st.code(_gu.research_prompt(_ugctx), language="text")
 
         # ── 📤 공유 (텔레그램 · PDF) ──────────────────────────────────
         _ucap = (f"📑 {info['name']}({_tk}) 분석 — {r['run_date']}\n"
@@ -2037,45 +2085,57 @@ elif mode == MODE_PORTFOLIO:
         st.divider()
         _sos = [s for s in signals if not s.error and s.current_price and s.stop_loss]
         _n_break = sum(1 for s in _sos if s.current_price <= s.stop_loss)
-        with st.expander(f"🆘 손절 도우미 — 판단 재료 정리"
-                         + (f" (손절선 이탈 {_n_break}종목)" if _n_break else ""),
+        with st.expander(f"🆘 손절 도우미 — 지금 팔까? 들고 갈까?"
+                         + (f" (🔴 {_n_break}종목)" if _n_break else ""),
                          expanded=_n_break > 0):
             render_regime_banner("US" if _pf_us else "KR")
-            _sos_rows = []
+            st.caption(
+                "판단 기준은 '얼마 잃었나'가 아니라 **미리 정해둔 규칙선**(매수가−1.5×ATR)입니다. "
+                "🔴 아래 / 🟢 위. 각 종목의 💬 버튼을 누르면 투자 귀재 6인의 관점을 들을 수 있어요."
+            )
+            _rgc = ss.get("regime_cache", {}).get("US" if _pf_us else "KR") or {}
+            _easy = {
+                "🔴": "규칙선 **아래**예요. 규칙대로면 정리 대상 — 전량이 부담되면 **절반만** 파는 것도 방법입니다.",
+                "🟠": "규칙선 **바로 위**. 더 밀리면 🔴이 됩니다 — 오늘은 지켜보되 내일 아침 브리핑을 꼭 확인하세요.",
+                "🟡": "규칙선 위지만 힘이 약합니다. 추가 매수는 보류가 무난해요.",
+                "🟢": "규칙선 위 + 흐름 유지. 지금은 건드릴 이유가 없습니다.",
+            }
             for s in _sos:
-                _gap = (s.current_price / s.stop_loss - 1) * 100
                 _reb = max(0.0, (s.buy_price / s.current_price - 1) * 100)
                 _acct = s.profit_loss / total_invest * 100 if total_invest else 0.0
                 if s.current_price <= s.stop_loss:
-                    _vd = "🔴 손절선 이탈"
+                    _em = "🔴"
                 elif s.current_price <= s.stop_loss * 1.05:
-                    _vd = "🟠 손절선 근접"
+                    _em = "🟠"
                 elif s.strategy_score <= -30 and s.return_pct < 0:
-                    _vd = "🟡 약세 관찰"
+                    _em = "🟡"
                 else:
-                    _vd = "🟢 보유 영역"
-                _sos_rows.append({
-                    "종목":        f"{s.name}",
-                    "수익률":      f"{s.return_pct:+.1f}%",
-                    "손절선 여유": f"{_gap:+.1f}%",
-                    "본전까지":    f"+{_reb:.1f}%" if _reb > 0 else "—",
-                    "계좌 영향":   f"{_acct:+.1f}%p",
-                    "기술점수":    f"{s.strategy_score:+d}",
-                    "판정":        _vd,
-                })
-            if _sos_rows:
-                st.dataframe(pd.DataFrame(_sos_rows), hide_index=True, use_container_width=True)
-            st.markdown(
-                "- **판정 기준은 원금이 아니라 규칙**: 🔴 = 매수가 −1.5×ATR 손절선 아래 (시스템 규칙상 추세 이탈). "
-                "매수가 대비 몇 % 손실인지는 시장이 모르는 숫자라 기준으로 삼지 않습니다.\n"
-                "- **본전까지**: 손실이 깊을수록 요구 반등률이 가파르게 커집니다 (−20%는 +25%, −30%는 +43% 필요).\n"
-                "- **계좌 영향**: 이 종목의 손익이 계좌 전체에서 차지하는 비중 — ±1%p 수준이면 전체 계좌엔 치명적이지 않습니다.\n"
-                "- **전량이 부담스러우면 분할**: 절반만 정리해 리스크를 줄이고 판단 시간을 버는 것도 한 방법입니다."
-            )
+                    _em = "🟢"
+                cL, cR = st.columns([5, 1])
+                _parts = [f"수익률 **{s.return_pct:+.1f}%**"]
+                if _reb > 0:
+                    _parts.append(f"본전까지 **+{_reb:.1f}%** 올라야")
+                _parts.append(f"계좌 전체 영향 **{_acct:+.1f}%p**")
+                cL.markdown(f"{_em} **{s.name}** — " + " · ".join(_parts))
+                cL.caption(_easy[_em])
+                with cR.popover("💬 귀재"):
+                    from agents import gurus as _gu
+                    _gctx = {"mode": "hold", "code": s.code, "name": s.name,
+                             "ret_pct": s.return_pct,
+                             "below_stop": s.current_price <= s.stop_loss,
+                             "near_stop": s.current_price <= s.stop_loss * 1.05,
+                             "rebound": _reb, "acct_pct": _acct,
+                             "score": s.strategy_score,
+                             "regime_trend": _rgc.get("trend"), "regime_vol": _rgc.get("vol_label")}
+                    for g in _gu.comments(_gctx):
+                        st.markdown(f"{g['icon']} **{g['guru']}** <span style='color:gray; font-size:0.8rem'>({g['style']})</span>",
+                                    unsafe_allow_html=True)
+                        st.caption(f"“{g['line']}”")
+                    st.caption(_gu.DISCLAIMER)
             st.caption(
-                "📊 참고 — 우리 A/B 백테스트에선 서킷 후 V자 반등 구간에서 일괄 손절이 성과를 깎았고(펀드 시뮬 기본 손절 OFF), "
-                "반대로 추세 하락장에선 ATR 손절이 MDD를 크게 줄였습니다. 급락 당일의 패닉 매도가 가장 나쁜 선택이었던 구간이 많으니 "
-                "레짐(위 배너)과 함께 보세요. ⚠️ 본 도우미는 정보 정리일 뿐 투자 권유가 아니며, 최종 판단과 책임은 본인에게 있습니다."
+                "📊 우리 백테스트 참고: 급락 후 V자 반등장에선 일괄 손절이 성과를 깎았고, 추세 하락장에선 손절이 "
+                "큰 손실을 막았습니다. 즉 '지금이 어떤 장인지'(위 배너)가 절반입니다. "
+                "⚠️ 정보 정리일 뿐 투자 권유가 아니며, 최종 판단과 책임은 본인에게 있습니다."
             )
 
     # ── 매매 이력 (모의계좌 자동 집행 기록) ─────────────────────────────
