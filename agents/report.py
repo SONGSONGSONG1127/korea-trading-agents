@@ -37,8 +37,11 @@ def build_pdf(title: str, subtitle: str,
     pdf.add_font("NG", "B", str(_FONT_DIR / "NanumGothic-Bold.ttf"))
     pdf.add_page()
 
+    import re as _re
+
     def _cell(h: float, text: str):
-        # multi_cell 기본값은 커서를 셀 오른쪽에 두므로 매번 왼쪽 여백·다음 줄로 리셋
+        # 나눔고딕에 없는 이모지 제거 + multi_cell 커서를 매번 왼쪽 여백·다음 줄로 리셋
+        text = _re.sub(r"[\U0001F000-\U0001FAFF☀-➿️‍]", "", str(text))
         pdf.multi_cell(0, h, text, new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_font("NG", "B", 17)
