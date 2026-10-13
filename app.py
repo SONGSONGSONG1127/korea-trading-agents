@@ -83,6 +83,7 @@ MODE_PORTFOLIO = "💼 포트폴리오"
 MODE_BACKDATA  = "📅 백데이터 검증"
 MODE_FUND      = "🏦 펀드 시뮬레이션"
 MODE_DISCOUNT  = "💎 할인찬스"
+MODE_GURU      = "🎩 귀재의 추천"
 MODE_TRACK     = "📜 트랙레코드"
 
 ss = st.session_state
@@ -99,7 +100,8 @@ def _global_store() -> dict:
 
 
 _PERSIST_KEYS = ("results", "screener", "bd_result", "fund_result", "dc_result",
-                 "last_analyzed", "us_screener", "market", "us_results", "us_last")
+                 "last_analyzed", "us_screener", "market", "us_results", "us_last",
+                 "guru_picks")
 
 ss.setdefault("results", {})
 ss.setdefault("last_analyzed", None)
@@ -112,6 +114,7 @@ ss.setdefault("fund_result", None)  # 펀드 시뮬레이션 결과 캐시
 ss.setdefault("fund_logs", None)    # 펀드 로그 조회 캐시
 ss.setdefault("dc_result", None)    # 할인찬스 결과 캐시
 ss.setdefault("us_screener", None)  # 미국 스크리너 결과 캐시
+ss.setdefault("guru_picks", {})     # 귀재 추천 캐시 {market: 결과}
 ss.setdefault("us_results", {})     # 미국 종목분석 캐시 {ticker: {...}}
 ss.setdefault("us_last", None)      # 마지막 분석 티커
 ss.setdefault("market", "KR")       # "KR" | "US"
@@ -181,7 +184,7 @@ with st.sidebar:
         st.caption("멀티 에이전트 미국 주식 분석 (S&P500) v1")
 
     mode = st.radio("모드", [MODE_DETAIL, MODE_SCREEN, MODE_PORTFOLIO, MODE_BACKDATA,
-                            MODE_FUND, MODE_DISCOUNT, MODE_TRACK], key="mode")
+                            MODE_FUND, MODE_DISCOUNT, MODE_GURU, MODE_TRACK], key="mode")
     st.caption("💡 투자금만 넣으면 종목·수량 자동 구성 → 💼 포트폴리오 → ✨ 추천 만들기")
     # 수동 모드 전환 시 '돌아가기' 목적지 무효화 (버튼 점프 직후 rerun은 예외)
     if ss.pop("_nav_jump", False):
@@ -243,6 +246,15 @@ with st.sidebar:
         run_btn   = False
         st.caption("Google Sheets에 저장된 매수 포지션을 관리합니다.")
         st.caption("손절선 = 매수가 − 1.5×ATR  |  목표가 = 매수가 + 2.0×ATR")
+    elif mode == MODE_GURU:
+        scan_btn = False
+        run_btn  = False
+        st.caption(
+            "6인 투자 대가의 철학을 **스크리닝 조건식**으로 옮겨, 거래대금 상위 유니버스에서 "
+            "각자 스타일의 종목을 3개씩 뽑습니다. 조건은 카드에 전부 공개됩니다."
+        )
+        guru_btn = st.button("🎩 귀재 스캔 실행", type="primary", use_container_width=True)
+        st.caption("약 1~2분 (국장은 버핏 가치 필터용 재무 조회 포함)")
     elif mode == MODE_BACKDATA:
         from datetime import date, timedelta
         scan_btn = False
@@ -937,11 +949,15 @@ def render_analysis(news, tech, fund, strat, comm=None):
              "news_summary": news.summary, "veto": news.veto}
     from agents import gurus as _gu
     with st.expander("💬 투자 귀재들의 한줄평 — 6가지 관점으로 다시 보기"):
+        _gcs = _gu.comments(_gctx)
+        st.markdown(f"**{_gu.tally(_gcs)}** · 👍 긍정 / ⏸ 중립 / 👎 부정")
         gc1, gc2 = st.columns(2)
-        for i, g in enumerate(_gu.comments(_gctx)):
+        for i, g in enumerate(_gcs):
             with (gc1 if i % 2 == 0 else gc2):
-                st.markdown(f"{g['icon']} **{g['guru']}** <span style='color:gray; font-size:0.8rem'>({g['style']})</span>",
-                            unsafe_allow_html=True)
+                st.markdown(
+                    f"{g['emoji']} **{g['stance']}** · {g['icon']} {g['guru']} "
+                    f"<span style='color:gray; font-size:0.8rem'>({g['style']})</span>",
+                    unsafe_allow_html=True)
                 st.caption(f"“{g['line']}”")
         st.caption(_gu.DISCLAIMER)
     with st.expander("🔎 심층리서치 프롬프트 — 복사해서 Claude/ChatGPT 딥리서치에 붙여넣기"):
@@ -1298,11 +1314,15 @@ elif ss.market == "US" and mode == MODE_DETAIL:
                   "regime_trend": _usg.get("trend"), "regime_vol": _usg.get("vol_label")}
         from agents import gurus as _gu
         with st.expander("💬 투자 귀재들의 한줄평 — 6가지 관점으로 다시 보기"):
+            _ugcs = _gu.comments(_ugctx)
+            st.markdown(f"**{_gu.tally(_ugcs)}** · 👍 긍정 / ⏸ 중립 / 👎 부정")
             ugc1, ugc2 = st.columns(2)
-            for i, g in enumerate(_gu.comments(_ugctx)):
+            for i, g in enumerate(_ugcs):
                 with (ugc1 if i % 2 == 0 else ugc2):
-                    st.markdown(f"{g['icon']} **{g['guru']}** <span style='color:gray; font-size:0.8rem'>({g['style']})</span>",
-                                unsafe_allow_html=True)
+                    st.markdown(
+                        f"{g['emoji']} **{g['stance']}** · {g['icon']} {g['guru']} "
+                        f"<span style='color:gray; font-size:0.8rem'>({g['style']})</span>",
+                        unsafe_allow_html=True)
                     st.caption(f"“{g['line']}”")
             st.caption(_gu.DISCLAIMER)
         with st.expander("🔎 심층리서치 프롬프트 — 복사해서 Claude/ChatGPT 딥리서치에 붙여넣기"):
@@ -1424,6 +1444,62 @@ elif ss.market == "US" and mode == MODE_SCREEN:
         st.caption("백테스트: 기술점수 ≥ 0.30 신호의 보유기간별 성과 (같은 종목 과거 데이터 기준, 참고용)")
     else:
         st.info("왼쪽 사이드바에서 **S&P500 스캔** 버튼을 눌러주세요.")
+
+# ── 모드: 귀재의 추천 (K·USA 공통) ──────────────────────────────────────
+elif mode == MODE_GURU:
+    st.title("🎩 귀재의 추천")
+    st.caption(
+        "각 투자 대가의 **공개된 철학을 스크리닝 조건식으로 옮긴** 규칙 기반 발굴입니다 — "
+        "실제 인물의 추천·자문이 아니며, 어떤 조건으로 뽑았는지 카드마다 공개합니다. "
+        f"유니버스: {'거래대금 상위 국장 종목' if ss.market == 'KR' else 'S&P500'} (추천 포트폴리오와 동일 데이터)"
+    )
+    render_regime_banner(ss.market)
+
+    if guru_btn:
+        from agents import guru_picks
+        with st.status("🎩 귀재 스캔 중... (1~2분)", expanded=True) as _gs:
+            _gbar = st.progress(0.0)
+            try:
+                _gres = guru_picks.run(
+                    ss.market,
+                    progress=lambda i, t, n: _gbar.progress(min(i / t, 1.0), text=f"{i}/{t} — {n}"),
+                )
+                ss.guru_picks[ss.market] = _gres
+                _gs.update(label="✅ 스캔 완료", state="complete", expanded=False)
+            except Exception as e:
+                st.error(f"스캔 실패: {e}")
+
+    _gp = ss.guru_picks.get(ss.market)
+    if _gp:
+        st.markdown(f"**{_gp['run_date']} 기준** · 유니버스 {_gp['n_universe']}종목 스캔")
+        _gcol1, _gcol2 = st.columns(2)
+        for _gi, _gd in enumerate(_gp["gurus"]):
+            with (_gcol1 if _gi % 2 == 0 else _gcol2):
+                with st.container(border=True):
+                    st.markdown(f"### {_gd['icon']} {_gd['guru']} <span style='color:gray; font-size:0.85rem'>({_gd['style']})</span>",
+                                unsafe_allow_html=True)
+                    st.caption(f"“{_gd['one']}”")
+                    if _gd["picks"]:
+                        for _pk in _gd["picks"]:
+                            _pc1, _pc2 = st.columns([1, 5])
+                            if ss.market == "US":
+                                _pc1.button("🔍", key=f"gp_{_gd['guru']}_{_pk['code']}",
+                                            on_click=goto_us_detail, args=(_pk["code"],))
+                            else:
+                                _pc1.button("🔍", key=f"gp_{_gd['guru']}_{_pk['code']}",
+                                            on_click=goto_detail, args=(_pk["code"],))
+                            _pc2.markdown(f"**{_pk['name']}** `{_pk['code']}`  \n"
+                                          f"<span style='color:gray; font-size:0.82rem'>{_pk['why']}</span>",
+                                          unsafe_allow_html=True)
+                    else:
+                        st.caption("오늘은 이 조건을 만족하는 종목이 없습니다 — 억지로 뽑지 않습니다.")
+                    st.caption(f"📐 선정 조건: {_gd['rule']}")
+        st.caption(
+            "⚠️ 재미와 관점 환기용 규칙 기반 스크리닝입니다. 🔍를 눌러 종목분석으로 검증한 뒤 판단하세요. "
+            "투자 권유가 아니며 최종 판단과 책임은 본인에게 있습니다."
+        )
+    else:
+        st.info("왼쪽 사이드바에서 **🎩 귀재 스캔 실행**을 눌러주세요. 6인의 스타일별 종목이 각 3개씩 나옵니다.")
 
 # ── 모드: 종목 분석 ─────────────────────────────────────────────────────
 elif mode == MODE_DETAIL:
@@ -2127,9 +2203,14 @@ elif mode == MODE_PORTFOLIO:
                              "rebound": _reb, "acct_pct": _acct,
                              "score": s.strategy_score,
                              "regime_trend": _rgc.get("trend"), "regime_vol": _rgc.get("vol_label")}
-                    for g in _gu.comments(_gctx):
-                        st.markdown(f"{g['icon']} **{g['guru']}** <span style='color:gray; font-size:0.8rem'>({g['style']})</span>",
-                                    unsafe_allow_html=True)
+                    _gcs = _gu.comments(_gctx)
+                    st.markdown(f"**{_gu.tally(_gcs)}**")
+                    st.divider()
+                    for g in _gcs:
+                        st.markdown(
+                            f"{g['emoji']} **{g['stance']}** · {g['icon']} {g['guru']} "
+                            f"<span style='color:gray; font-size:0.8rem'>({g['style']})</span>",
+                            unsafe_allow_html=True)
                         st.caption(f"“{g['line']}”")
                     st.caption(_gu.DISCLAIMER)
             st.caption(
