@@ -451,6 +451,38 @@ def render_market_brief(market: str) -> None:
                             unsafe_allow_html=True)
 
 
+def render_fortune() -> None:
+    """🔮 오늘의 운세 카드 (SAJU_* secrets 설정 시에만, 하루 단위 캐시)."""
+    _today = str(pd.Timestamp.now().date())
+    cached = ss.get("fortune_cache")
+    if cached and cached[0] == _today:
+        f = cached[1]
+    else:
+        try:
+            from agents import fortune
+            f = fortune.today()
+            ss.fortune_cache = (_today, f)
+        except Exception:
+            return
+    if not f:
+        return
+    with st.expander(f"🔮 오늘의 운세 — {f['name']}님 · {f['date']}"):
+        fc1, fc2, fc3 = st.columns(3)
+        fc1.metric("총운", f"{f['total']}점")
+        fc2.metric("재물운", f"{f['wealth']}점")
+        fc3.metric("투자운", f"{f['invest']}점")
+        st.markdown(f"**{f['relation_title']}**")
+        st.markdown(f"{f['summary']}")
+        st.info(f"💰 {f['invest_advice']}")
+        if f["bonus_txt"]:
+            st.markdown(f"✨ {f['bonus_txt']}")
+        st.caption(
+            f"🍀 {f['lucky']}  \n"
+            f"내 사주: {f['saju']} ({f['zodiac']} · {f['me']}) · 오늘은 {f['today_ganji']} · "
+            f"만세력 기반 오행 상생상극 — 재미로 보세요 😄"
+        )
+
+
 def render_share(key: str, title: str, caption: str,
                  sections: list, fig, meta: dict | None = None) -> None:
     """공유 블록 — 텔레그램 전송(차트 사진+PDF) / PDF 다운로드."""
@@ -972,6 +1004,7 @@ elif ss.market == "US" and mode == MODE_DETAIL:
     st.title("🇺🇸 미국 종목 분석")
     st.caption("차트 · 기술 지표 · 멀티기간 백테스트 · 기업 정보 (뉴스·펀더멘탈 점수는 v2)")
     render_market_brief("US")
+    render_fortune()
 
     _target = None
     _p = ss.pop("us_pending", None)
@@ -1351,6 +1384,7 @@ elif mode == MODE_DETAIL:
     st.title("한국 주식 멀티 에이전트 분석")
     st.caption("Agent 1 (뉴스/공시) → Agent 2 (기술 4축) → Agent 3 (펀더멘탈) → Agent 4 (전략 종합)")
     render_market_brief("KR")
+    render_fortune()
 
     target, force = None, False
     if run_btn:

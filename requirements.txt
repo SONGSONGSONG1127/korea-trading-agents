@@ -12,3 +12,4 @@ yfinance>=0.2.50
 tzdata>=2024.1
 fpdf2>=2.8.0
 kaleido>=0.2.1
+korean_lunar_calendar>=0.3.1

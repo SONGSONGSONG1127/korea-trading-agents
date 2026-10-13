@@ -154,6 +154,13 @@ def main() -> None:
     except Exception as e:
         mb_text = f"(시황 수집 실패: {e})"
 
+    # 오늘의 운세 (SAJU_* secrets 설정 시에만)
+    try:
+        from agents import fortune
+        ft_text = fortune.telegram_section()
+    except Exception:
+        ft_text = ""
+
     pf_text, n_alerts = portfolio_section(dry=args.dry)
 
     # 라이브 펀드 리밸런싱 (주기 도래 시에만 실행됨)
@@ -176,7 +183,7 @@ def main() -> None:
     head = f"📈 *TradingAgents 브리핑* — {now.strftime('%m/%d %a')}"
     if n_alerts:
         head += f"\n⚠️ *신호 {n_alerts}건 발생 — 포트폴리오 확인 필요*"
-    msg = "\n\n".join(x for x in [head, rg_text, mb_text, pf_text, fund_text, nav_text, sc_text] if x.strip())
+    msg = "\n\n".join(x for x in [head, rg_text, mb_text, ft_text, pf_text, fund_text, nav_text, sc_text] if x.strip())
 
     if args.dry:
         print(msg)
