@@ -2033,6 +2033,51 @@ elif mode == MODE_PORTFOLIO:
                     except Exception as e:
                         st.error(f"삭제 실패: {e}")
 
+        # ── 🆘 손절 도우미 (의사결정 보조 — 권유 아님) ──────────────────
+        st.divider()
+        _sos = [s for s in signals if not s.error and s.current_price and s.stop_loss]
+        _n_break = sum(1 for s in _sos if s.current_price <= s.stop_loss)
+        with st.expander(f"🆘 손절 도우미 — 판단 재료 정리"
+                         + (f" (손절선 이탈 {_n_break}종목)" if _n_break else ""),
+                         expanded=_n_break > 0):
+            render_regime_banner("US" if _pf_us else "KR")
+            _sos_rows = []
+            for s in _sos:
+                _gap = (s.current_price / s.stop_loss - 1) * 100
+                _reb = max(0.0, (s.buy_price / s.current_price - 1) * 100)
+                _acct = s.profit_loss / total_invest * 100 if total_invest else 0.0
+                if s.current_price <= s.stop_loss:
+                    _vd = "🔴 손절선 이탈"
+                elif s.current_price <= s.stop_loss * 1.05:
+                    _vd = "🟠 손절선 근접"
+                elif s.strategy_score <= -30 and s.return_pct < 0:
+                    _vd = "🟡 약세 관찰"
+                else:
+                    _vd = "🟢 보유 영역"
+                _sos_rows.append({
+                    "종목":        f"{s.name}",
+                    "수익률":      f"{s.return_pct:+.1f}%",
+                    "손절선 여유": f"{_gap:+.1f}%",
+                    "본전까지":    f"+{_reb:.1f}%" if _reb > 0 else "—",
+                    "계좌 영향":   f"{_acct:+.1f}%p",
+                    "기술점수":    f"{s.strategy_score:+d}",
+                    "판정":        _vd,
+                })
+            if _sos_rows:
+                st.dataframe(pd.DataFrame(_sos_rows), hide_index=True, use_container_width=True)
+            st.markdown(
+                "- **판정 기준은 원금이 아니라 규칙**: 🔴 = 매수가 −1.5×ATR 손절선 아래 (시스템 규칙상 추세 이탈). "
+                "매수가 대비 몇 % 손실인지는 시장이 모르는 숫자라 기준으로 삼지 않습니다.\n"
+                "- **본전까지**: 손실이 깊을수록 요구 반등률이 가파르게 커집니다 (−20%는 +25%, −30%는 +43% 필요).\n"
+                "- **계좌 영향**: 이 종목의 손익이 계좌 전체에서 차지하는 비중 — ±1%p 수준이면 전체 계좌엔 치명적이지 않습니다.\n"
+                "- **전량이 부담스러우면 분할**: 절반만 정리해 리스크를 줄이고 판단 시간을 버는 것도 한 방법입니다."
+            )
+            st.caption(
+                "📊 참고 — 우리 A/B 백테스트에선 서킷 후 V자 반등 구간에서 일괄 손절이 성과를 깎았고(펀드 시뮬 기본 손절 OFF), "
+                "반대로 추세 하락장에선 ATR 손절이 MDD를 크게 줄였습니다. 급락 당일의 패닉 매도가 가장 나쁜 선택이었던 구간이 많으니 "
+                "레짐(위 배너)과 함께 보세요. ⚠️ 본 도우미는 정보 정리일 뿐 투자 권유가 아니며, 최종 판단과 책임은 본인에게 있습니다."
+            )
+
     # ── 매매 이력 (모의계좌 자동 집행 기록) ─────────────────────────────
     with st.expander("🧾 매매 이력 — 자동 집행·청산 기록"):
         st.caption("모의계좌는 매일 아침 브리핑이 손절/익절 신호를 자동 집행하고 여기에 기록합니다. (실계좌는 알림만)")
