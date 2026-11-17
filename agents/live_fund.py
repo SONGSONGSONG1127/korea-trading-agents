@@ -277,6 +277,34 @@ def _current_price(code: str, market: str) -> float | None:
         return None
 
 
+def benchmark_return(market: str, start_date: str) -> float | None:
+    """개시일 종가 → 현재까지 벤치마크(KR: KOSPI, US: S&P500) 수익률. 실패 시 None."""
+    try:
+        d0 = pd.Timestamp(str(start_date))
+        days = max(30, int((pd.Timestamp.now() - d0).days * 0.75) + 30)
+        if market == "US":
+            from . import us_data
+            df = us_data.fetch_benchmark(days=days)
+        else:
+            from . import technical_agent
+            df = technical_agent.fetch_daily_prices_fast("KOSPI", days=days)
+        dates = pd.to_datetime(df["date"])
+        base = df.loc[dates <= d0, "close"]
+        if base.empty:
+            return None
+        return float(df["close"].iloc[-1] / base.iloc[-1] - 1)
+    except Exception:
+        return None
+
+
+def days_running(start_date: str) -> int | None:
+    """개시일로부터 경과 일수 (달력 기준)."""
+    try:
+        return int((pd.Timestamp.now().normalize() - pd.Timestamp(str(start_date))).days)
+    except Exception:
+        return None
+
+
 def record_navs(dry: bool = False) -> list[str]:
     """_펀드설정의 모든 펀드 계좌 NAV를 _기준가 시트에 하루 1회 기록.
     기준가 = NAV / 초기자본 × 1000 (설정일 1,000원 시작 — 펀드 시뮬과 동일 규약)."""
@@ -329,6 +357,14 @@ def record_navs(dry: bool = False) -> list[str]:
         line = f"  {account}: NAV {nav:,.0f}"
         if unit:
             line += f" · 기준가 {unit:,.1f} ({nav / capital - 1:+.2%})"
+        start = str(cfg.get("개시일") or "")
+        if start:
+            dr = days_running(start)
+            line += f"\n     개시 {start}" + (f" (D+{dr})" if dr is not None else "")
+            if capital > 0:
+                bm = benchmark_return(str(cfg.get("시장", "KR")), start)
+                if bm is not None:
+                    line += f" · 같은 기간 지수 {bm:+.1%} → 초과 {(nav / capital - 1 - bm) * 100:+.1f}%p"
         if n_miss:
             line += f" · 시세 실패 {n_miss}종목 매수가 대체"
         lines.append(line)

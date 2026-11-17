@@ -1985,6 +1985,22 @@ elif mode == MODE_PORTFOLIO:
                         return 0.0
                 _navs = live_fund.load_nav(selected_pf)
                 _fcap = _fnum(_fcfg.get("초기자본"))
+                _fstart = str(_fcfg.get("개시일") or "")
+                _fmkt = str(_fcfg.get("시장") or "KR")
+                if _fstart:
+                    _fdr = live_fund.days_running(_fstart)
+                    _fhead = f"📅 **개시일 {_fstart}**" + (f" (운용 D+{_fdr}일)" if _fdr is not None else "")
+                    _flast_rb = str(_fcfg.get("최종리밸일") or "")
+                    if _flast_rb and _flast_rb != _fstart:
+                        _fhead += f" · 최근 리밸런싱 {_flast_rb}"
+                    if _navs and _fcap > 0:
+                        _fret = _fnum(_navs[-1].get("NAV")) / _fcap - 1
+                        _fbm = live_fund.benchmark_return(_fmkt, _fstart)
+                        _fhead += f"  \n설정 후 수익률 **{_fret:+.2%}**"
+                        if _fbm is not None:
+                            _fhead += (f" · 같은 기간 {'S&P500' if _fmkt == 'US' else 'KOSPI'} {_fbm:+.1%}"
+                                       f" → 초과 **{(_fret - _fbm) * 100:+.1f}%p**")
+                    st.markdown(_fhead)
                 if _navs:
                     _last = _navs[-1]
                     _unit = _fnum(_last.get("기준가"))
@@ -2078,8 +2094,15 @@ elif mode == MODE_PORTFOLIO:
         m1.metric("포지션 수", f"{len(signals)}개")
         m2.metric("총 매수금액", _pfmt(total_invest))
         m3.metric("총 평가금액", _pfmt(total_eval))
-        m4.metric("총 손익", _pfmt_s(total_pl), f"{total_pl_pct:+.1f}%",
+        _is_fund_acct = selected_pf.startswith(("펀드", "모의"))
+        m4.metric("보유 종목 손익" if _is_fund_acct else "총 손익",
+                  _pfmt_s(total_pl), f"{total_pl_pct:+.1f}%",
                   delta_color="normal" if total_pl >= 0 else "inverse")
+        if _is_fund_acct:
+            st.caption(
+                "ℹ️ 위 손익은 **지금 들고 있는 종목만**의 평가손익입니다. 이미 손절·청산된 종목의 실현손익과 "
+                "현금은 빠져 있어요. 계좌 전체 성과는 위 🏦 펀드 기준가(설정 후 수익률) 또는 아래 🧾 매매 이력을 보세요."
+            )
 
         if _pf_us:
             _fx = us_data.usd_krw()
